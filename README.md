@@ -1,8 +1,11 @@
 # Many-Body Quantum States of Quantum Circuits and Neural Networks
 
 **UCL MSc Quantum Techs**
+
 **Author:** Joseph Cooper 
+
 **Supervisors:** Prof. Arijeet Pal · Prof. Andrew Fisher
+
 **Academic Year:** 2025–26
 
 ---
@@ -15,7 +18,7 @@ Monitored quantum circuits — alternating layers of entangling unitary gates an
 
 ---
 
-## Research Plan (Remaining Phases)
+## Research Plan
 
 **Phase A — Scalable simulation & finite-size scaling**
 Stabiliser-tableau backend; systematic sweeps over *p*_m for L = 8, 16, 32, 64; crossing analysis of S(L/2)/L to extract *p*_c; finite-size scaling collapse of I₃.
@@ -26,7 +29,7 @@ Replace spatial CNN with TCN and GRU; benchmark classification accuracy vs L and
 **Phase C — Adaptive feedback & entanglement stabilisation**
 Use the best temporal architecture from Phase B as a policy backbone; implement adaptive feedback loop selecting measurement locations per circuit layer; target stabilisation of GHZ/cat states at rates that would otherwise drive area-law behaviour; compare to Sign-Colour Decoder baseline.
 
-**Phase D *(stretch)* — Multi-agent RL decomposition**
+**Phase D — Multi-agent RL decomposition**
 Partition chain into N = 4 or 8 local agents (CTDE paradigm); test whether local agents communicating with neighbours can match a global single-agent controller; assess scalability beyond L = 64.
 
 ---
