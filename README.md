@@ -1,6 +1,6 @@
 # Many-Body Quantum States of Quantum Circuits and Neural Networks
 
-**UCL MSc Quantum Techs**
+**UCL MSc Quantum Technologies**
 
 **Author:** Joseph Cooper 
 
