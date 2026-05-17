@@ -63,31 +63,26 @@ class TFIMConfig:
 
 @dataclass
 class ToricConfig:
-    """Configuration for the toric code neural decoder (Stage 2)."""
-
     # Code geometry
     L: int = 6
-
-    # Error model
     p_error: float = 0.08
 
-    # Simple feedforward decoder
-    hidden_dim: int = 512
-    num_layers: int = 3
+    # Architecture
+    base_channels: int = 48
+    num_res_blocks: int = 3
     dropout: float = 0.1
 
     # Training
     num_train_samples: int = 50_000
     num_val_samples: int = 5_000
-    batch_size: int = 256
+    batch_size: int = 512
     num_epochs: int = 30
-    learning_rate: float = 1e-3
-    weight_decay: float = 1e-5
+    learning_rate: float = 2e-3
+    weight_decay: float = 1e-4
 
     # Evaluation
     eval_samples_training: int = 300
     eval_samples_final: int = 2000
-    num_res_blocks: int = 3
 
     @property
     def n_qubits(self) -> int:
