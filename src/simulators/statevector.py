@@ -1,7 +1,6 @@
 """
-simulators/statevector.py
--------------------------
 1D monitored brickwork circuit using Qiskit Statevector.
+
 Handles Ising-type Clifford gates and projective measurements with
 explicit Born-rule collapse. Limited to L ≲ 12 due to exponential cost.
 (For larger systems use simulators.stim_clifford instead!)
@@ -16,11 +15,21 @@ from src.config import BrickworkConfig
 # Build Ising entangling gate
 def build_ising_gate() -> Operator:
     """
-    Build the two-qubit Ising entangling gate:
+    Build the two-qubit Ising entangling gate used at every bond
+    of the monitored brickwork circuit.
+    
+    - U = e^{-iπ​/4(X⊗X + Z⊗Z)}
+    
+    Since [X⊗X, Z⊗Z] = 0 the factorisation is exact (not Trotter):
+    
+    - U = e^{-iπ​/4(X⊗X)} · e^{-iπ​/4(Z⊗Z)}  (U†U=I)
 
-        U = exp(-i π/4 (X⊗X + Z⊗Z))
+    Each factor computed via Euler formula (A^2 = I):
+    
+    - e^{−iθA}=cos(θ)I−isin(θ)A
 
-    XX and ZZ commute, so U = exp(-i π/4 XX) · exp(-i π/4 ZZ).
+    Returns:
+    4x4 unitary matrix  operator acting on two-qubit Hilbert space
     """
     X  = np.array([[0, 1], [1, 0]], dtype=complex)
     Z  = np.array([[1, 0], [0, -1]], dtype=complex)
@@ -37,15 +46,29 @@ def build_ising_gate() -> Operator:
 
 ISING_OP = build_ising_gate()
 
-
-# ============================================================================
-# ENTROPY HELPER
-# ============================================================================
-
+# Compute the Von Neumann entropy
 def compute_entropy(sv: Statevector, L: int, subsystem: List[int]) -> float:
     """
-    Von Neumann entropy S(A) for a subsystem A of a Qiskit Statevector.
-    Uses partial_trace and the Qiskit entropy function (base-2 bits).
+    Von Neumann entanglement entropy of subsystem A for an n-qubit pure state.
+
+    S(A) = -Tr[rho_A·log_2(rho_A)]
+
+    rho_A is the reduced density matrix obtained by tracing out the
+    complement B:
+
+    rho_A = Tr_B(|psi><psi|)
+
+    Limits:
+    S(A) = 0              ->  A unentangled from B (product state)
+    S(A) = log_2(|A|)     ->  A maximally entangled with B
+
+    Parameters
+    sv = n-qubit statevector |ψ​⟩
+    L = total number of qubits n
+    subsystem = qubit indices defining A e.g. [0, 1, 2] for left half
+
+    Returns:
+    S = Entanglement entropy in bits (base-2) 
     """
     trace_out = [q for q in range(L) if q not in subsystem]
     if len(trace_out) == 0 or len(trace_out) == L:
@@ -53,25 +76,28 @@ def compute_entropy(sv: Statevector, L: int, subsystem: List[int]) -> float:
     rho_A = partial_trace(sv, trace_out)
     return float(entropy(rho_A, base=2))
 
-
-# ============================================================================
-# SINGLE-QUBIT MEASUREMENT
-# ============================================================================
+# ===============================================================
+# Projective Measurement — Born-rule collapse in arbitrary basis
+# ===============================================================
 
 def measure_qubit_statevector(sv: Statevector, qubit: int,
                                L: int, basis: str = 'X'
                                ) -> Tuple[int, Statevector]:
     """
-    Projective single-qubit measurement with Born-rule collapse.
+    Projective single-qubit measurement with Born-rule collapse
+    in an arbitrary Pauli basis {X, Y, Z}.
 
     Steps:
-      1. Rotate to measurement basis
-      2. Compute P(outcome=0)
-      3. Sample outcome
-      4. Project and renormalise
-      5. Rotate back
-
-    Returns (outcome, collapsed_statevector).
+      1. Rotate to measurement basis: |ψ'⟩ = R|ψ⟩
+      R = H (X basis) R = HS† (Y basis) R = I (Z basis)
+      2. Compute Born-rule probability: P(0) = Σ_i|⟨i|ψ'⟩|²
+      where i_q = 0
+      3. Sample outcome: m=0 -> P(0) / m1 -> 1-P(0)
+      4. Project and renormalise: |ψ'⟩ → |ψ'⟩ / ‖ψ'‖
+      5. Rotate back: |ψ_m⟩ = R†|ψ'⟩
+      
+    Returns: 
+    (outcome, collapsed_statevector) i.e. (m, |ψ_m⟩)
     """
     data = np.array(sv.data, dtype=complex)
     n    = int(np.log2(len(data)))
@@ -121,11 +147,12 @@ class MonitoredBrickworkCircuit:
     projective measurements via Qiskit Statevector.
 
     Each layer:
-      1. Even bonds: U_Ising on (0,1), (2,3), ...
+      1. Even bonds: U_Ising on (0,1), (2,3), ... 
       2. Odd bonds:  U_Ising on (1,2), (3,4), ...
-      3. Measurements: each qubit measured with prob p_m in meas_basis
+      3. Measurements: each qubit q measured with prob p_m 
+      in measurment basis |ψ⟩ → Π_m|ψ⟩ / ‖Π_m|ψ⟩‖
 
-    Use for L ≲ 12. For larger L use stim_clifford.run_trajectory_stim.
+    * Use for L ≲ 12. For larger L use stim_clifford.run_trajectory_stim *
     """
 
     def __init__(self, L: int, p_u: float = 1.0,
@@ -137,13 +164,16 @@ class MonitoredBrickworkCircuit:
 
     def run_trajectory(self, p_m: float) -> Dict:
         """
-        Simulate one quantum trajectory.
+        Simulate one quantum trajectory of the monitored brickwork circuit.
+        Runs depth layers of alternating Ising gates and stochastic 
+        measurements at rate p_m, tracking entanglement throughout.
 
-        Returns dict with:
-          'entropy_history'    : S(L/2) after each layer
-          'measurement_record' : (depth, L) int8 array (-1 = unmeasured)
-          'final_entropy'      : S(L/2) of the final state
-          'measurement_count'  : total measurements performed
+        Returns:
+        
+        entropy_history = S(L/2) after each layer, shape (depth,) 
+        measurement_record = (depth, L) -1 = unmeasured, 0/1 = measurement outcome
+        final_entropy = S(L/2) of the final state
+        measurement_count = total number of measurements performed
         """
         L  = self.L
         sv = Statevector.from_label('0' * L)
