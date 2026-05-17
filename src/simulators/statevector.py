@@ -1,26 +1,19 @@
 """
 simulators/statevector.py
 -------------------------
-1D monitored brickwork circuit using Qiskit Statevector (Stage 3).
+1D monitored brickwork circuit using Qiskit Statevector.
 Handles Ising-type Clifford gates and projective measurements with
 explicit Born-rule collapse. Limited to L ≲ 12 due to exponential cost.
-
-For larger systems use simulators.stim_clifford instead.
+(For larger systems use simulators.stim_clifford instead!)
 """
-
+#Imports
 import numpy as np
 from typing import Dict, List, Optional, Tuple
-
 from qiskit.quantum_info import Statevector, Operator, partial_trace
 from qiskit.quantum_info import entropy
-
 from src.config import BrickworkConfig
 
-
-# ============================================================================
-# ISING GATE
-# ============================================================================
-
+# Build Ising entangling gate
 def build_ising_gate() -> Operator:
     """
     Build the two-qubit Ising entangling gate:
