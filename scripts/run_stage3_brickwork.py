@@ -27,7 +27,7 @@ from sklearn.metrics import accuracy_score
 from src.config import BrickworkConfig
 from src.simulators.statevector import MonitoredBrickworkCircuit
 from src.analysis.encoders import encode_flat, encode_2d
-from src.models.cnn_jax import train_cnn, cnn_predict_proba
+from src.models.phase_classifiers import train_cnn, cnn_predict_proba
  
  
 # ============================================================================

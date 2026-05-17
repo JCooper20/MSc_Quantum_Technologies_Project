@@ -17,7 +17,7 @@ import time
 from src.config import StimConfig
 from src.simulators.stim_clifford import run_mipt_sweep, run_scaling
 from src.analysis.encoders import generate_data
-from src.models.cnn_jax import train_cnn, cnn_predict_proba
+from src.models.phase_classifiers import train_cnn, cnn_predict_proba
 from src.analysis.encoders import encode_flat, encode_2d
  
 from sklearn.neural_network import MLPClassifier

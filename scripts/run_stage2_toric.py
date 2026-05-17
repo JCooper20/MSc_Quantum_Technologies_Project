@@ -15,7 +15,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
  
 from src.config import ToricConfig
-from src.codes.toric_code import (
+from src.codes.decoder import (
     ToricCode, MWPMDecoder, CNNDecoder,
     ToricDataset, ToricTrainer
 )

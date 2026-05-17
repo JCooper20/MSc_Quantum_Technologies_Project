@@ -18,9 +18,9 @@ from sklearn.metrics import accuracy_score
 from src.config import ArchConfig
 from src.simulators.stim_clifford import run_trajectory_stim
 from src.analysis.encoders import generate_data_all, encode_flat, encode_2d, encode_temporal
-from src.models.cnn_jax import train_cnn, cnn_predict_proba
-from src.models.tcn_jax import train_tcn
-from src.models.gru_jax import train_gru
+from src.models.phase_classifiers import train_cnn, cnn_predict_proba
+from src.models.phase_classifiers import train_tcn
+from src.models.phase_classifiers import train_gru
  
  
 def run_delta_sweep(cfg: ArchConfig):
