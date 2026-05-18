@@ -1,43 +1,76 @@
 """
-training/reinforce.py
----------------------
-Supervised pre-training and REINFORCE fine-tuning for the adaptive
-measurement policy (Stage 6).
+Two-phase training pipeline for the adaptive measurement policy.
 
-Two-phase training:
-  1. Supervised pre-train: MSE loss against boundary-heuristic scores.
-     Gives the policy a sensible warm start.
-  2. REINFORCE fine-tuning: policy gradient with EMA baseline and
-     optional entropy regularisation.
+[Phase 1] Supervised pre-training:
+ - Minimise MSE loss against boundary-heuristic scores to give the
+   policy a physically informed warm start before RL:
+
+        L_supervised = (1/N) Σᵢ ||π(sᵢ) - d(qᵢ)||²
+
+    where d(q) = |q - L/2| / (L/2) is the boundary distance score.
+
+[Phase 2] REINFORCE fine-tuning:
+  - Policy gradient optimisation maximising expected entanglement:
+
+        ∇_θ J(θ) = E_τ[Σ_t ∇_θ log π_θ(aₜ|sₜ) · (R - b)]
+
+    where:
+        R — final half-chain entropy S(L/2) (reward signal)
+        b — exponential moving average baseline: b ← (1-α)b + αR
+            reduces variance without introducing bias
+        π_θ(aₜ|sₜ) — Plackett-Luce probability of top-k selection
+
+    Entropy regularisation encourages exploration:
+        L_RL = -∇_θ J(θ) + β · H(π_θ)
 """
-
+# Imports
 import numpy as np
 import jax
 import jax.numpy as jnp
 from jax import grad, jit
 from typing import Dict, List, Tuple
-
-from src.models.policy import (
-    policy_forward, boundary_scores,
-    run_episode_adaptive, run_episode_boundary,
-    _apply_layer
-)
+from src.models.policy import (policy_forward, boundary_scores,
+run_episode_adaptive, run_episode_boundary,_apply_layer)
 from src.training.adam import AdamOptimizer
 import stim
 
 SEED = 42
 
+# ===================================
+# Supervised Learning - Pre Training
+# ===================================
 
-# ============================================================================
-# SUPERVISED PRE-TRAINING
-# ============================================================================
-
-def generate_supervised_data(L: int, depth: int, k_per_layer: int,
-                              n_episodes: int = 500,
+def generate_supervised_data(L: int, depth: int, k_per_layer: int,n_episodes: int = 500,
                               window: int = 4) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Generate (state, target_scores) pairs from the boundary-avoiding oracle.
-    The target is the static boundary_scores vector for every time step.
+    Generate (state, target_score) pairs from the boundary-avoiding oracle
+    for supervised pre-training of the policy network.
+
+    Each episode runs a full circuit trajectory under the boundary heuristic, 
+    measuring the k qubits furthest from the bipartition cut — and records
+    the policy input state at every timestep alongside the target score:
+
+        d(q) = |q - L/2| / (L/2) ∈ [0, 1] — boundary distance score
+
+    State vector at timestep t (input_dim = window·2L + 1):
+
+        s_t = [m_{t-W}⁰,...,m_{t-W}^{L-1}, o_{t-W}⁰,...,  ]
+              [                    ...                        ] ← W layers
+              [m_{t}⁰,  ...,m_{t}^{L-1},   o_{t}⁰,...      ]
+              [t/depth] ← time fraction
+
+    where W = window, m = was-measured mask, o = outcomes (Zero-padded for t < W)
+
+    Parameters:
+    - L = number of qubits
+    - depth = number of circuit layers (typically 4L)
+    - k_per_layer = number of qubits measured per layer
+    - n_episodes = number of trajectory episodes to generate
+    - window = number of past layers in state vector W
+
+    Returns;
+    - X = state vectors (n_episodes·depth, window·2L + 1)
+    - y = boundary distance scores (n_episodes·depth, L)    
     """
     print(f"    Generating {n_episodes} supervised episodes...", flush=True)
     input_dim      = window * 2 * L + 1
@@ -80,7 +113,38 @@ def generate_supervised_data(L: int, depth: int, k_per_layer: int,
 def supervised_pretrain(params, X: np.ndarray, y: np.ndarray,
                          epochs: int = 30, batch_size: int = 128,
                          lr: float = 1e-3):
-    """MSE pre-training to predict boundary distance scores."""
+    """
+    Supervised pre-training of the policy network via MSE regression
+    against boundary distance scores.
+
+    Minimises:
+        L_MSE = (1/N) Σᵢ ||π_θ(sᵢ) - d(qᵢ)||²
+
+    where:
+        π_θ(sᵢ) ∈ ℝ^L  — policy network output (qubit scores)
+        d(qᵢ)   ∈ ℝ^L  — boundary distance targets d(q) = |q - L/2| / (L/2)
+
+    Gives the policy a physically informed warm start before REINFORCE —
+    the network learns to score qubits by distance from the bipartition
+    cut before any RL signal is applied.
+
+    Each epoch:
+        1. Shuffle training set
+        2. For each mini-batch:
+            - g = ∇_θ L_MSE(θ, x_batch, y_batch)
+            - θ = Adam(θ, g)
+
+    Parameters:
+    - params = initial policy parameter dict
+    - X = state vectors (N, window·2L + 1)
+    - y = boundary distance score targets (N, L)
+    - epochs = number of full passes over training set
+    - batch_size = number of samples per gradient update
+    - lr = Adam learning rate
+
+    Returns:
+    - params = pre-trained policy parameter dict
+    """
     print(f"    Pre-training: {len(X)} samples, {epochs} epochs", flush=True)
     opt  = AdamOptimizer(params, lr=lr)
     X_j  = jnp.array(X)
@@ -110,25 +174,45 @@ def supervised_pretrain(params, X: np.ndarray, y: np.ndarray,
     return params
 
 
-# ============================================================================
-# REINFORCE FINE-TUNING
-# ============================================================================
+# =======================
+#  REINFORCE Fine-Tuning
+# =======================
 
 def reinforce_update(params, states: np.ndarray,
                       log_probs: np.ndarray, advantage: float):
     """
-    REINFORCE surrogate loss (differentiable w.r.t. policy scores).
+    Compute REINFORCE policy gradient for a single episode.
 
-        L = -advantage · Σ_t log π(a_t | s_t)
+    Surrogate loss (differentiable w.r.t. policy parameters θ):
 
-    where log π is the Plackett-Luce log-probability of the chosen
-    top-k subset — approximated by re-computing scores and using the
-    stored log-probs scaled by the advantage.
+       - L = -A · (1/T) Σ_t log_probs_t · Σ_q log π_θ(q | s_t)
+
+    where:
+      - A = advantage = R - b  (reward minus EMA baseline)
+      - log_probs = stored Plackett-Luce log P(top-k selection) at each t
+                     treated as importance weights (stop gradient)
+      - log π_θ = log-softmax of policy scores, differentiable w.r.t. θ
+
+    The Plackett-Luce probability of selecting top-k qubits {q₁,...,qₖ}:
+
+        log P = Σⱼ log( exp(sⱼ) / Σ_{q∉{q₁,...,qⱼ₋₁}} exp(sq) )
+
+    Gradients flow through log π_θ only — log_probs are fixed constants
+    from the episode, making this a valid policy gradient estimator.
+
+    Parameters:
+    - params = current policy parameter dict
+    - states    : state vectors from episode (T, window·2L + 1
+    - log_probs : Plackett-Luce log-probs of actions taken
+    - advantage = R - b (scaled reward signal)
+
+    Returns:
+    - g = policy gradient (same pytree structure as params)
     """
     @jit
     def loss_fn(p):
         x       = jnp.array(states)
-        scores  = policy_forward(p, x)      # (T, L)
+        scores  = policy_forward(p, x) # (T, L)
         # Differentiable surrogate: weighted sum of log-softmax scores
         log_pi  = jax.nn.log_softmax(scores, axis=-1)
         # Use stored log_probs as importance weights (stop gradient)
@@ -147,9 +231,42 @@ def train_policy(L: int, depth: int, k_per_layer: int,
                   pretrain_episodes: int = 500,
                   pretrain_epochs: int = 30) -> Tuple:
     """
-    Full two-phase training: supervised pre-train → REINFORCE.
+    Full two-phase policy training: supervised pre-train → REINFORCE.
 
-    Returns (trained_params, training_history_dict)
+    [Phase 1] Supervised warm-start:
+        Train policy to predict boundary distance scores via MSE.
+        Provides physically informed initialisation before RL.
+
+    [Phase 2] REINFORCE fine-tuning:
+        For each batch of episodes:
+            1. Run batch_size episodes under current policy π_θ
+            2. Update EMA baseline:
+                   b ← (1-α)·b + α·⟨S(L/2)⟩_batch
+            3. Compute per-episode advantage:
+                   A_i = S_i(L/2) - b
+            4. Accumulate policy gradient:
+                   g = (1/B) Σᵢ ∇_θ L_REINFORCE(θ, episode_i, A_i)
+            5. Update: θ = Adam(θ, g)
+
+    Improvement tracked against boundary heuristic baseline:
+        ΔS = ⟨S(L/2)⟩_adaptive - ⟨S(L/2)⟩_boundary
+
+    Parameters:
+    - L = number of qubits
+    - depth = number of circuit layers (typically 4L)
+    - k_per_layer = measurement budget per layer
+    - n_batches = number of REINFORCE update steps
+    - batch_size = episodes per gradient update B
+    - lr = Adam learning rate for REINFORCE
+    - window = state vector history length W
+    - baseline_alpha = EMA decay α for variance reduction
+    - entropy_coeff = entropy regularisation coefficient β
+    - pretrain_episodes = episodes for supervised data generation
+    - pretrain_epochs = epochs for supervised pre-training
+
+    Returns:
+    - params = trained policy parameter dict
+    - history = 'entropy', 'baseline', 'improvement' per batch (dict)
     """
     import jax.random as jrandom
     input_dim = window * 2 * L + 1
