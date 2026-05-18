@@ -1,30 +1,20 @@
 """
-training/adam.py
-----------------
 Canonical JAX Adam optimiser shared by all JAX models
 (CNN, TCN, GRU, policy network).
-
-Previously copy-pasted ~6 times in the original monolith.
 """
-
+# Imports
 import jax
 import jax.numpy as jnp
-
 
 class AdamOptimizer:
     """
     Vanilla Adam optimiser for arbitrary JAX pytree parameter trees.
 
-    Parameters
-    ----------
-    params : pytree
-        Initial parameters (used only to initialise moment accumulators).
-    lr : float
-        Learning rate.
-    beta1, beta2 : float
-        Exponential decay rates for first and second moment estimates.
-    eps : float
-        Numerical stability constant.
+    Parameters:
+    - params = Initial parameters (used only to initialise moment accumulators).
+    - lr = Learning rate.
+    - beta1, beta2 = Exponential decay rates for first and second moment estimates.
+    - eps = Numerical stability constant.
     """
 
     def __init__(self, params, lr: float = 1e-3,
@@ -42,14 +32,12 @@ class AdamOptimizer:
         """
         Perform one Adam update step.
 
-        Parameters
-        ----------
-        params : pytree   — current parameters
-        grads  : pytree   — gradients (same tree structure as params)
+        Parameters:
+        - params = current parameters
+        - grads  = gradients (same tree structure as params)
 
-        Returns
-        -------
-        updated_params : pytree
+        Returns:
+        - updated_params 
         """
         self.t += 1
         b1, b2 = self.beta1, self.beta2
