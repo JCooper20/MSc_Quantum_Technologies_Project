@@ -1,18 +1,32 @@
 """
-src/codes/toric_code.py
------------------------
-Toric Code implementation with:
-  ToricCode    — geometry, syndrome computation, logical operators
-  MWPMDecoder  — greedy minimum-weight perfect matching baseline
-  CNNDecoder   — circular-padding ResNet decoder (best Stage 2 result)
-  ToricDataset — dataset generator
-  Trainer      — training loop with MWPM comparison
+Toric code decoder pipeline.
 
-The CNNDecoder uses circular padding throughout to respect the toric
-(periodic) boundary conditions, and two separate output heads for
-horizontal and vertical qubits.
+Five components:
+    
+    - ToricCode = L×L toric code geometry, syndrome computation,
+                  parity check matrix H, and logical operators Z₁, Z₂
+
+    - MWPMDecoder = greedy minimum-weight perfect matching baseline.
+                    Pairs syndrome defects by shortest path on the torus,
+                    providing the classical benchmark for the CNN.
+
+    - CNNDecoder = circular-padding ResNet decoder.
+                   Circular (toric) padding is used throughout to respect
+                   the periodic boundary conditions of the torus:
+                   I⊗...⊗G⊗...⊗I → wrap-around convolutions
+                   Two output heads — one for horizontal qubits (rows),
+                   one for vertical qubits (columns).
+
+    - ToricDataset = generates (syndrome, error) pairs at error rate p
+                     for supervised training of the CNNDecoder.
+
+    - ToricTrainer = PyTorch training loop with per-epoch MWPM comparison,
+                     tracking neural vs MWPM failure rates throughout.
+
+Key metric: logical failure rate P_fail = P(non-trivial homology class)
+evaluated across a sweep of physical error rates p ∈ [0.02, 0.14].
 """
-
+# Imports
 import numpy as np
 import torch
 import torch.nn as nn
@@ -23,18 +37,32 @@ from collections import defaultdict
 from tqdm.auto import tqdm
 from typing import Dict, List, Tuple
 import time
-
 from src.config import ToricConfig
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-
-# ============================================================================
+# ===========
 # TORIC CODE
-# ============================================================================
+# ===========
 
 class ToricCode:
-    """L×L toric code — syndrome measurement and logical operator checks."""
+    """
+    L×L toric code -> geometry, syndrome computation, and logical operators.
+
+    Qubits live on edges of an L×L lattice on a torus:
+        - Horizontal qubits = indices 0, ..., L²-1
+        - Vertical qubits = indices L², ..., 2L²-1
+
+    Stabilisers are plaquette operators — products of 4 edge qubits
+    around each face. Syndrome s = He mod 2 flags violated plaquettes.
+
+    Logical operators wind around the torus:
+        Z₁ = horizontal string along top row
+        Z₂ = vertical string along left column
+
+    Correction succeeds iff (error + recovery) is in the trivial
+    homology class: (e+r)·Z₁ = (e+r)·Z₂ = 0 mod 2
+    """
 
     def __init__(self, L: int):
         self.L           = L
@@ -91,13 +119,27 @@ class ToricCode:
         return h1 == 0 and h2 == 0
 
 
-# ============================================================================
-# MWPM DECODER (baseline)
-# ============================================================================
+# =============
+# MWPM DECODER
+# =============
 
 class MWPMDecoder:
-    """Greedy minimum-weight perfect matching decoder with precomputed distances."""
+    """
+    Greedy minimum-weight perfect matching decoder for the toric code.
 
+    Algorithm:
+        1. Find all syndrome defects (violated plaquettes)
+        2. Repeatedly pair the two closest remaining defects
+        3. Connect each pair via shortest path on the torus
+        4. XOR the path qubits into the recovery operator
+
+    Distances precomputed on the torus using taxicab metric:
+
+        - d(p₁, p₂) = min(|r₁-r₂|, L-|r₁-r₂|) + min(|c₁-c₂|, L-|c₁-c₂|)
+
+    The wrap-around min() enforces periodic boundary conditions —
+    the shortest path may go around the torus rather than across it.
+    """
     def __init__(self, code: ToricCode):
         self.code = code
         self.L    = code.L
@@ -173,12 +215,13 @@ class MWPMDecoder:
         return path
 
 
-# ============================================================================
+# ============
 # CNN DECODER
-# ============================================================================
-
+# ============
 class CircularPad2d(nn.Module):
-    """Circular (toric) padding for 2D convolutions."""
+    """
+    Circular (toric) padding for 2D convolutions.
+    """
     def __init__(self, padding: int):
         super().__init__()
         self.padding = padding
@@ -188,7 +231,9 @@ class CircularPad2d(nn.Module):
 
 
 class ResBlock(nn.Module):
-    """Residual block with circular padding and BatchNorm."""
+    """
+    Residual block with circular padding and BatchNorm.
+    """
     def __init__(self, channels: int, dropout: float):
         super().__init__()
         self.net = nn.Sequential(
@@ -208,12 +253,22 @@ class ResBlock(nn.Module):
 
 class CNNDecoder(nn.Module):
     """
-    CNN decoder with circular padding for toric topology.
+    Circular-padding ResNet decoder for the toric code.
 
-    Two output heads — one for horizontal qubits, one for vertical —
-    each outputting per-qubit error probabilities.
+    Architecture:
+        syndrome (L,L) → CircularPad → Conv(1,C,3) → BN → ReLU
+        → ResBlock(C) × num_res_blocks → h_head → P(error)_horizontal
+        → v_head → P(error)_vertical    (L²,)  ┘ → cat → (2L²,)
+
+    Two output heads decode horizontal and vertical qubits separately,
+    reflecting the two distinct qubit types in the toric code geometry.
+
+    Circular padding throughout enforces toric boundary conditions —
+    convolutions wrap around the lattice edges as on a physical torus.
+
+    Output P(error)_q ∈ [0,1] — predicted probability that qubit q
+    has a bit-flip error given the observed syndrome.
     """
-
     def __init__(self, config: ToricConfig):
         super().__init__()
         self.L        = config.L
@@ -280,11 +335,22 @@ class CNNDecoder(nn.Module):
         return recovery
 
 
-# ============================================================================
+# ========
 # DATASET
-# ============================================================================
+# ========
 
 class ToricDataset(Dataset):
+    """
+    Dataset of (syndrome, error) pairs for supervised CNN decoder training.
+
+    Generates num_samples iid error instances at physical error rate p_error:
+        eᵢ ~ Bernoulli(p_error)^{2L²}
+        sᵢ = H · eᵢ mod 2
+
+    Stored as:
+        syndromes = 2D syndrome images (N, L, L) 
+        errors = binary error vectors (N, 2L²) 
+    """
     def __init__(self, code: ToricCode, p_error: float, num_samples: int):
         self.L = code.L
         print(f"Generating {num_samples:,} samples...")
@@ -306,12 +372,25 @@ class ToricDataset(Dataset):
         }
 
 
-# ============================================================================
-# TRAINER
-# ============================================================================
+# ==============
+# TORIC TRAINER
+# ==============
 
 class ToricTrainer:
-    """Training loop with per-epoch MWPM comparison."""
+    """
+    Training loop for the CNN toric code decoder with per-epoch
+    MWPM comparison.
+
+    Three evaluation modes:
+        _train_epoch = BCE loss minimisation via AdamW + grad clipping
+        _validate = per-qubit accuracy on held-out validation set
+        evaluate = logical failure rate comparison Neural vs MWPM
+
+    Optimiser: AdamW with cosine annealing learning rate schedule
+    
+    Best checkpoint saved when neural failure rate gap to MWPM improves:
+        - gap = P_fail(neural) - P_fail(MWPM)
+    """
 
     def __init__(self, model: CNNDecoder, config: ToricConfig,
                  train_loader: DataLoader, val_loader: DataLoader):
