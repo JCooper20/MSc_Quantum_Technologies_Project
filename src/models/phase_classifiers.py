@@ -1,42 +1,60 @@
 """
-models/cnn_jax.py
------------------
-Spatial CNN phase classifier implemented in JAX (Stages 3–5).
+======================================================================================
+(1)
+Spatial CNN phase classifier for measurement-induced phase detection 
 
 Architecture:
-  Conv(32) → Conv(64) → ResBlock(64) → ResBlock(64)
-  → GlobalAvgPool → FC(32) → FC(2)
+- Conv(32) → Conv(64) → ResBlock(64) → ResBlock(64) → GlobalAvgPool → FC(32) → FC(2)
 
-Input: (batch, 2, depth, L)  — two-channel spatiotemporal image.
+Input:
+- (batch, 2, depth, L) where 2 ∈ Ch0: was-measured mask and Ch1: measurement outcomes
+Output: 
+- (batch, 2) logits for [volume-law, area-law]
+
+Processes the full measurement record simultaneously as a spatial image
+(no notion of temporal ordering)
+======================================================================================
 """
-
+# Imports
 import jax
 import jax.numpy as jnp
 import jax.lax as lax
 from jax import random as jrandom, grad, jit
 import numpy as np
-
 from src.training.adam import AdamOptimizer
 
 SEED = 42
 
-
-# ============================================================================
-# CONV HELPER
-# ============================================================================
+# =====================
+# 2D convolution helper 
+# =====================
 
 def conv2d(x, w, b):
-    """2D convolution with (1,1) stride and same padding."""
+    """
+    2D convolution with unit stride and same padding.
+
+    Applies learned filters w across the spatiotemporal input x,
+    preserving spatial dimensions (depth, L) via same padding:
+
+    out[b,c,i,j] = Σ_{k,di,dj} w[c,k,di,dj] · x[b,k,i+di,j+dj] + b[c]
+
+    Parameters:
+    x = input feature map (batch, in_channels, depth, L)
+    w = convolutional filters (out_channels, in_channels, kH, kW)
+    b = bias per output channel (out_channels,)
+
+    Returns:
+    out = same spatial dimensions as input (batch, out_channels, depth, L) 
+    """
     out = lax.conv_with_general_padding(
         x, w, window_strides=(1, 1),
         padding=((1, 1), (1, 1)),
         lhs_dilation=(1, 1), rhs_dilation=(1, 1))
     return out + b[None, :, None, None]
-
-
-# ============================================================================
-# PARAMETER INIT
-# ============================================================================
+  
+# =============================================================
+# Parameter Initialisation — random normal weights, zero biases
+# =============================================================
 
 def init_cnn_params(key, in_channels: int = 2):
     keys = jrandom.split(key, 6)
@@ -63,8 +81,7 @@ def init_cnn_params(key, in_channels: int = 2):
 
 def cnn_forward(params, x):
     """
-    x: (batch, 2, depth, L)
-    Returns logits: (batch, 2)
+    Forward pass of the spatial CNN phase classifier.
     """
     h    = jax.nn.relu(conv2d(x, params['conv1_w'], params['conv1_b']))
     h    = jax.nn.relu(conv2d(h, params['conv2_w'], params['conv2_b']))
@@ -77,22 +94,65 @@ def cnn_forward(params, x):
 
 
 def cross_entropy_loss(params, x, y):
+    """
+    Cross-entropy loss function for binary phase classification:
+
+        L = -(1/N)Σ_iΣ_c[y_c^i ⋅ log(p_c^i)]
+
+    where:
+        p_c = softmax(logits)_c (predicted probability of class c)
+        y_c = one_hot(label)_c (true class indicator ∈ {0,1})
+        N = batch size
+
+    Parameters:
+    params = dict of JAX arrays (current network parameters)
+    x = input spatiotemporal images (batch, 2, depth, L)
+    y = (batch,) int (true labels ∈ {0=volume-law, 1=area-law})
+
+    Returns;
+    loss = mean cross-entropy over batch
+    """
     logits    = cnn_forward(params, x)
     log_probs = jax.nn.log_softmax(logits, axis=-1)
     one_hot   = jax.nn.one_hot(y, 2)
     return -jnp.mean(jnp.sum(one_hot * log_probs, axis=-1))
 
 
-# ============================================================================
+# ==============
 # TRAINING LOOP
-# ============================================================================
+# ==============
 
 def train_cnn(img_train, y_train, img_val, y_val,
               epochs: int = 40, batch_size: int = 32, lr: float = 1e-3):
     """
-    Train the CNN phase classifier.
+    Train the CNN phase classifier via mini-batch gradient descent.
 
-    Returns (params, train_accuracy, val_accuracy, history_dict)
+    Each epoch:
+        1. Shuffle training set
+        2. For each mini-batch:
+              - g = ∇_θ L(θ, x_batch, y_batch) [JAX grad]
+              - θ = Adam(θ, g) [parameter update]
+        3. Evaluate cross-entropy loss on full training set
+        4. Evaluate accuracy on validation set:
+              - acc = (1/N) Σᵢ 𝟙[argmax(f(xᵢ)) = yᵢ]
+
+    Gradients computed via JAX automatic differentiation (jit-compiled
+    for performance). Parameters stored as JAX pytree dict.
+
+    Parameters:
+      - img_train = (N_train, 2, depth, L) (training images)
+      - y_train = (N_train,) (training labels ∈ {0, 1})
+      - img_val = (N_val, 2, depth, L) (validation images)
+      - y_val = (N_val,) (validation labels ∈ {0, 1})
+      - epochs = number of full passes over training set
+      - batch_size = number of trajectories per gradient update
+      - lr = Adam learning rate
+
+    Returns:
+      - params = trained parameter dict
+      - tr_acc = final training accuracy
+      - va_acc = final validation accuracy
+      - history = dict with keys 'loss' and 'val_acc' (one value per epoch)
     """
     key    = jrandom.PRNGKey(SEED)
     params = init_cnn_params(key, in_channels=img_train.shape[1])
@@ -138,51 +198,103 @@ def train_cnn(img_train, y_train, img_val, y_val,
 
 
 def cnn_predict_proba(params, img: np.ndarray) -> float:
-    """Return P(area-law) for a single trajectory image."""
+    """
+    Return the predicted probability of the area-law phase for a
+    single trajectory measurement record:
+
+    P(area-law) = softmax(f(x))_1 = e^{z_1} / (e^{z_0} + e^{z_1})
+
+    Used during the learnability sweep, evaluates the trained
+    classifier at a single p_m value to trace the phase boundary.
+
+    Parameters:
+    - params = trained CNN parameter dict
+    - img = single trajectory two-channel image (2, depth, L)
+
+    Returns:
+    - P(area-law) ∈ [0, 1]:
+        - 0.0 = network certain this is volume-law
+        - 0.5 = network uncertain — near the phase boundary p_c
+        - 1.0 = network certain this is area-law
+    """
     logits = cnn_forward(params, jnp.array(img[None, ...]))
     return float(jax.nn.softmax(logits, axis=-1)[0, 1])
+
+
 """
-models/tcn_jax.py
------------------
-Temporal Convolutional Network (TCN) phase classifier in JAX (Stage 5).
+======================================================================================
+(2)
+Temporal Convolutional Network (TCN) phase classifier in JAX .
 
 Architecture:
-  Input projection → 3 residual blocks (dilations 1, 2, 4)
-  → GlobalAvgPool over time → FC(32) → FC(2)
+- Input projection → ResBlock(dilation=1) → ResBlock(dilation=2)
+                   → ResBlock(dilation=4) → GlobalAvgPool → FC(32) → FC(2)
 
-Each residual block uses causal 1D convolution, so the representation
-at time t depends only on t′ ≤ t. This respects the causal ordering
-of the measurement record and is the key distinction from the spatial CNN.
+Each residual block uses causal 1D convolution — the representation
+at time t depends only on measurements at t' ≤ t:
 
-Input:  (batch, depth, 2·L)  — temporal sequence from encode_temporal
-Output: (batch, 2)           — phase logits
+    out[t] = f(x[t], x[t-1], ..., x[t-k])   k = (kernel_size-1)·dilation
+
+Increasing dilations (1→2→4) expand the receptive field exponentially
+without adding parameters — at dilation 4 each output sees 4·(k-1)
+past timesteps, capturing long-range temporal correlations that develop
+near the critical point p_c.
+
+Key distinction from CNN: causal ordering is strictly enforced —
+the network processes the measurement record as it would arrive
+in a real experiment, one layer at a time!
+
+Input:
+- causal sequence from 'encode_temporal()' (batch, depth, 2·L)
+- depth (circuit layers (time axis))
+- [was-measured mask | outcomes] at each layern (2·L)
+
+Output : 
+- logits [score(volume-law), score(area-law)] (batch, 2)
+======================================================================================
 """
-
+# Imports
 import jax
 import jax.numpy as jnp
 import jax.lax as lax
 from jax import random as jrandom, grad, jit
 import numpy as np
-
 from src.training.adam import AdamOptimizer
 
 SEED = 42
 
-
-# ============================================================================
-# CAUSAL 1D CONVOLUTION
-# ============================================================================
+# ======================
+# Causal 1D Convolution
+# ======================
 
 def causal_conv1d(x, w, b, dilation: int = 1):
     """
-    Causal 1D convolution along the time axis.
+    Causal 1D convolution along the time axis with optional dilation.
 
-    x : (batch, in_channels, time)
-    w : (out_channels, in_channels, kernel_size)
-    b : (out_channels,)
+    Causality is enforced by left-padding only — padding (pad_len, 0)
+    adds zeros before the sequence so output at time t sees only:
 
-    Left-padding ensures the output at position t depends only on
-    inputs at positions t′ ≤ t (causality).
+        out[t] = Σ_{k=0}^{K-1} w[k] · x[t - k·dilation]   t' ≤ t
+
+    where pad_len = (kernel_size - 1) · dilation ensures no future
+    information leaks into the past.
+
+    Dilation skips d-1 inputs between filter, expanding the
+    receptive field without increasing parameters:
+
+        dilation=1 : receptive field = kernel_size
+        dilation=2 : receptive field = 2·(kernel_size-1) + 1
+        dilation=4 : receptive field = 4·(kernel_size-1) + 1
+
+    Parameters:
+    - x = input sequence (batch, in_channels, time)
+    - w = causal filters (out_channels, in_channels, kernel_size)
+    - b = bias (out_channels,)
+    - dilation = gap between filter taps (1=standard, 2/4=dilated)
+
+    Returns:
+    - out = causal output sequence (batch, out_channels, time)
+            out[t] depends only on x[t'], t' ≤ t
     """
     kernel_size = w.shape[2]
     pad_len     = (kernel_size - 1) * dilation
@@ -197,16 +309,37 @@ def causal_conv1d(x, w, b, dilation: int = 1):
     return out + b[None, :, None]
 
 
-# ============================================================================
-# PARAMETER INIT
-# ============================================================================
+# =========================
+# Parameter Initialisation
+# =========================
 
 def init_tcn_params(key, in_features: int, hidden: int = 64,
                     kernel_size: int = 3):
     """
-    Initialise TCN parameters.
+    Initialise all TCN parameters as a JAX pytree dict.
 
-    Architecture: input projection → 3 residual blocks (dilations 1,2,4).
+    Architecture:
+        Input projection = (in_features, 1) → (hidden, 1)   kernel=1
+        ResBlock 0 = (hidden, hidden, k)  dilation=1
+        ResBlock 1 = (hidden, hidden, k)  dilation=2
+        ResBlock 2 = (hidden, hidden, k)  dilation=4
+        FC1 = (hidden, 32)
+        FC2 = (32, 2)
+
+    Each ResBlock has two causal conv layers (conv1, conv2).
+    Weights ~ N(0, 0.05²), biases = 0.
+
+    Parameters:
+    - key = JAX PRNG key — for reproducible initialisation
+    - in_features = input dimension => 2·L (mask + outcomes per layer)
+    - hidden = number of channels throughout the TCN
+    - kernel_size = causal filter width k (default 3)
+
+    Returns:
+    - p (dict of JAX arrays): 
+        - proj_w, proj_b
+        - b{0,1,2}_conv{1,2}_w, b{0,1,2}_conv{1,2}_b
+        - fc1_w, fc1_b, fc2_w, fc2_b
     """
     keys = jrandom.split(key, 20)
     s    = 0.05
@@ -231,22 +364,45 @@ def init_tcn_params(key, in_features: int, hidden: int = 64,
     return p
 
 
-# ============================================================================
-# FORWARD PASS
-# ============================================================================
+# =============
+# Forward Pass 
+# =============
 
 def tcn_forward(params, x):
     """
-    x: (batch, depth, 2·L)  — temporal sequence
-    Returns logits: (batch, 2)
+    Forward pass of the causal TCN phase classifier.
+
+    Data flow:
+        x  (batch, depth, 2·L)
+        → transpose  (batch, 2·L, depth)
+        → ReLU(CausalConv, dilation=1)  (batch, hidden, depth)
+        → ReLU(CausalConv + skip, dilation=1)  (batch, hidden, depth)
+        → ReLU(CausalConv + skip, dilation=2)  (batch, hidden, depth)
+        → ReLU(CausalConv + skip, dilation=4)  (batch, hidden, depth)
+        → GlobalAvgPool over time  (batch, hidden)
+        → ReLU(FC(32))  (batch, 32)
+        → FC(2)  (batch, 2)
+
+    Each residual block:
+        - h → ReLU(CausalConv₂(ReLU(CausalConv₁(h))) + h)
+
+    Receptive field grows exponentially with dilation:
+        - dilation=1 : sees k past steps
+        - dilation=2 : sees 2(k-1)+1 past steps
+        - dilation=4 : sees 4(k-1)+1 past steps
+
+    Parameters:
+    - params = dict of JAX arrays (from 'init_tcn_params()')
+    - x = causal measurement sequence (batch, depth, 2·L) 
+
+    Returns:
+    - logits = [score(volume-law), score(area-law)] (batch, 2) 
     """
     # Transpose to (batch, channels, time) for causal_conv1d
     h = jnp.transpose(x, (0, 2, 1))
-
     # Input projection
     h = jax.nn.relu(causal_conv1d(h, params['proj_w'], params['proj_b'],
                                    dilation=1))
-
     # Residual blocks at increasing dilations
     for i, dil in enumerate([1, 2, 4]):
         skip = h
@@ -255,29 +411,69 @@ def tcn_forward(params, x):
         h    = causal_conv1d(h, params[f'b{i}_conv2_w'],
                               params[f'b{i}_conv2_b'], dilation=dil)
         h    = jax.nn.relu(h + skip)
-
     # Global average pooling over time
     h = jnp.mean(h, axis=2)   # (batch, hidden)
-
     h = jax.nn.relu(h @ params['fc1_w'] + params['fc1_b'])
     return h @ params['fc2_w'] + params['fc2_b']
 
 
 def tcn_loss(params, x, y):
+    """
+    Cross-entropy loss for TCN phase classification.
+
+    - L = -1/N Σᵢ Σ_c y_c^(i) · log p_c^(i)
+
+    where p_c = softmax(tcn_forward(x))_c
+
+    Parameters:
+    - params = dict of JAX arrays
+    - x = causal measurement sequences (batch, depth, 2·L)
+    - y = true labels ∈ {0=volume-law, 1=area-law} (batch,)
+
+    Returns:
+    - loss = mean cross-entropy over batch
+    """
     logits    = tcn_forward(params, x)
     log_probs = jax.nn.log_softmax(logits, axis=-1)
     return -jnp.mean(jnp.sum(jax.nn.one_hot(y, 2) * log_probs, axis=-1))
 
-
-# ============================================================================
-# TRAINING
-# ============================================================================
+# =============
+# Training TCN
+# =============
 
 def train_tcn(seq_train, y_train, seq_val, y_val,
               hidden: int = 64, kernel_size: int = 3,
               epochs: int = 60, batch_size: int = 32, lr: float = 1e-3):
-    """Train the TCN and return (params, train_acc, val_acc, history)."""
-    in_features = seq_train.shape[2]   # 2*L
+    """
+    Train the TCN phase classifier via mini-batch gradient descent.
+
+    Each epoch:
+        1. Shuffle training set
+        2. For each mini-batch:
+           - g = ∇_θ L(θ, x_batch, y_batch) (JAX autodiff)
+           - θ = Adam(θ, g) (parameter update)
+        3. Record mean cross-entropy loss over epoch
+        4. Evaluate accuracy on validation set:
+           - acc = (1/N) Σᵢ 𝟙[argmax(f(xᵢ)) = yᵢ]
+
+    Parameters:
+    - seq_train = training causal sequences (N_train, depth, 2·L)
+    - y_train = training labels ∈ {0, 1} (N_train,)
+    - seq_val = validation causal sequences (N_val, depth, 2·L)
+    - y_val = validation labels ∈ {0, 1} (N_val,)
+    - hidden = number of TCN channels throughout
+    - kernel_size = causal filter width k
+    - epochs = number of full passes over training set
+    - batch_size = number of trajectories per gradient update
+    - lr = Adam learning rate
+
+    Returns:
+    - params = trained parameter dict
+    - tr_acc = final training accuracy
+    - va_acc = final validation accuracy
+    - history = 'loss' and 'val_acc', one value per epoch
+    """
+    in_features = seq_train.shape[2]   # 2xL
     key    = jrandom.PRNGKey(SEED)
     params = init_tcn_params(key, in_features, hidden, kernel_size)
     opt    = AdamOptimizer(params, lr=lr)
@@ -313,40 +509,60 @@ def train_tcn(seq_train, y_train, seq_val, y_val,
     tr_acc = float(jnp.mean(jnp.argmax(tcn_forward(params, X_tr), -1) == y_tr))
     va_acc = float(jnp.mean(jnp.argmax(tcn_forward(params, X_va), -1) == y_va))
     return params, tr_acc, va_acc, history
+
+
 """
-models/gru_jax.py
------------------
-Gated Recurrent Unit (GRU) phase classifier in JAX (Stage 5).
+======================================================================================
+(3)
+Gated Recurrent Unit (GRU) phase classifier in JAX.
 
-Processes the measurement record layer-by-layer. At each time step t
-the input is a 2L-vector [was_measured, outcome]. The GRU update:
+Processes the measurement record sequentially, one layer at a time.
+At each step t the GRU updates its hidden state h_t ∈ ℝ^hidden via:
 
-    z_t = σ(W_z [h_{t-1}; x_t] + b_z)          (update gate)
-    r_t = σ(W_r [h_{t-1}; x_t] + b_r)          (reset gate)
-    h̃_t = tanh(W_h [r_t ⊙ h_{t-1}; x_t] + b_h)
-    h_t = (1 - z_t) ⊙ h_{t-1} + z_t ⊙ h̃_t
+    z_t = σ(W_z [h_{t-1} ; x_t] + b_z) — update gate
+    r_t = σ(W_r [h_{t-1} ; x_t] + b_r) — reset gate
+    h̃_t = tanh(W_h [r_t ⊙ h_{t-1} ; x_t] + b_h) — candidate state
+    h_t = (1 - z_t) ⊙ h_{t-1} + z_t ⊙ h̃_t  — new hidden state
 
-The final hidden state h_T is fed to a two-class FC classifier.
+where:
+    [· ; ·] = concatenation
+    ⊙ = elementwise multiplication (Hadamard product)
+    σ = sigmoid activation ∈ (0,1)
 
-Input:  (batch, depth, 2·L)
-Output: (batch, 2)
+Gates control information flow:
+    z_t — how much of h_{t-1} to carry forward vs replace with h̃_t
+    r_t — how much of h_{t-1} to expose when computing h̃_t
+
+The final hidden state h_T summarises the full measurement history
+and is passed to a two-class FC classifier.
+
+Key distinction from TCN: the GRU maintains an explicit hidden state
+that accumulates information across all past timesteps — no fixed
+receptive field limit as in the dilated TCN.
+
+Input: 
+- causal sequence from encode_temporal (batch, depth, 2·L)
+  x_t = [m_t⁰,...,m_t^(L-1), o_t⁰,...,o_t^(L-1)] ∈ {0,1}^{2L}
+
+Output:        
+— logits [score(volume-law), score(area-law)] (batch, 2) 
+======================================================================================
 """
-
+# Imports
 import jax
 import jax.numpy as jnp
 import jax.lax as lax
 from jax import random as jrandom, grad, jit
 import numpy as np
-
 from src.training.adam import AdamOptimizer
 
 SEED = 42
 
+# =========================
+# Parameter Initialisation
+# =========================
 
-# ============================================================================
-# PARAMETER INIT
-# ============================================================================
-
+# Initialise GRU parameters: W_z, W_r, W_h ~ N(0, 0.05²), biases = 0
 def init_gru_params(key, in_features: int, hidden: int = 64):
     keys     = jrandom.split(key, 10)
     s        = 0.05
@@ -366,17 +582,27 @@ def init_gru_params(key, in_features: int, hidden: int = 64):
     }
 
 
-# ============================================================================
-# GRU CELL
-# ============================================================================
+# ================================================================
+# GRU Cell — single step hidden state update via gating mechanism
+# ================================================================
 
 def gru_cell(params, h, x):
     """
-    Single GRU step.
+    Single GRU step: update hidden state h_{t-1} → h_t given input x_t.
 
-    h : (batch, hidden)
-    x : (batch, in_features)
-    Returns h_new : (batch, hidden)
+        hx = [h_{t-1} ; x_t] — concatenate
+        z_t = σ(hx · W_z + b_z) — update gate
+        r_t = σ(hx · W_r + b_r) — reset gate
+        h̃_t = tanh([r_t ⊙ h_{t-1} ; x_t] · W_h + b_h) — candidate
+        h_t = (1 - z_t) ⊙ h_{t-1} + z_t ⊙ h̃_t  — new state
+
+    Parameters:
+    - params = dict — W_z, W_r, W_h, b_z, b_r, b_h
+    - h = previous hidden state h_{t-1} (batch, hidden)
+    - x = current input x_t (batch, in_features)
+
+    Returns:
+    - h_t = updated hidden state (batch, hidden)
     """
     hx      = jnp.concatenate([h, x], axis=-1)
     z       = jax.nn.sigmoid(hx @ params['W_z'] + params['b_z'])
@@ -386,14 +612,36 @@ def gru_cell(params, h, x):
     return (1 - z) * h + z * h_tilde
 
 
-# ============================================================================
-# FORWARD PASS
-# ============================================================================
+# =======================================================
+# Forward Pass — sequential scan over measurement layers
+# =======================================================
 
 def gru_forward(params, x):
     """
-    x: (batch, depth, 2·L)
-    Returns logits: (batch, 2)
+    Forward pass of the GRU phase classifier.
+    Sequentially updates hidden state h_t across all depth layers
+    via lax.scan — efficient JAX primitive for recurrent computation:
+      - h_0 = 0
+      - h_t = GRUCell(h_{t-1}, x_t) {t = 1, ..., depth}
+      - logits = FC(ReLU(FC(h_depth)))
+
+    Data flow:
+        x  (batch, depth, 2·L)
+        → transpose  (depth, batch, 2·L)
+        → lax.scan(GRUCell)  h_T : (batch, hidden)
+        → ReLU(FC(32))  (batch, 32)
+        → FC(2)  (batch, 2)
+
+    h_T encodes the full measurement history — unlike the TCN which
+    has a fixed receptive field, the GRU in principle retains
+    information from all past timesteps via the gating mechanism.
+
+    Parameters:
+    - params = dict of JAX arrays (from 'init_gru_params()')
+    - x = causal measurement sequence (batch, depth, 2·L)
+
+    Returns:
+    - logits = [score(volume-law), score(area-law)] (batch, 2)
     """
     batch_size = x.shape[0]
     hidden_dim = params['W_z'].shape[1]
@@ -412,19 +660,61 @@ def gru_forward(params, x):
 
 
 def gru_loss(params, x, y):
+    """
+    Cross-entropy loss for GRU phase classification.
+
+    - L = -1/N Σᵢ Σ_c y_c^(i) · log p_c^(i)
+
+    where p_c = softmax(gru_forward(x))_c
+
+    Parameters:
+    - params = dict of JAX arrays
+    - x = causal measurement sequences (batch, depth, 2·L)
+    - y = true labels ∈ {0=volume-law, 1=area-law} (batch,)
+
+    Returns:
+    - loss : mean cross-entropy over batch (scalar)
+    """
     logits    = gru_forward(params, x)
     log_probs = jax.nn.log_softmax(logits, axis=-1)
     return -jnp.mean(jnp.sum(jax.nn.one_hot(y, 2) * log_probs, axis=-1))
 
 
-# ============================================================================
-# TRAINING
-# ============================================================================
+# =============
+# Training GRU
+# =============
 
 def train_gru(seq_train, y_train, seq_val, y_val,
               hidden: int = 64,
               epochs: int = 60, batch_size: int = 32, lr: float = 1e-3):
-    """Train the GRU and return (params, train_acc, val_acc, history)."""
+    """
+    Train the GRU phase classifier via mini-batch gradient descent.
+
+    Each epoch:
+        1. Shuffle training set
+        2. For each mini-batch:
+           - g = ∇_θ L(θ, x_batch, y_batch) — JAX autodiff
+           - θ = Adam(θ, g) — parameter update
+        3. Record mean cross-entropy loss over epoch
+        4. Evaluate accuracy on validation set:
+           - acc = (1/N) Σᵢ 𝟙[argmax(f(xᵢ)) = yᵢ]
+
+    Parameters:
+    - seq_train = training causal sequences (N_train, depth, 2·L)
+    - y_train = training labels ∈ {0, 1} (N_train,)
+    - seq_val = validation causal sequences (N_val, depth, 2·L) 
+    - y_val = validation labels ∈ {0, 1} (N_val,)
+    - hidden = GRU hidden state dimension
+    - epochs = number of full passes over training set
+    - batch_size = number of trajectories per gradient update
+    - lr = Adam learning rate
+
+    Returns:
+    - params = trained parameter dict
+    - tr_acc = final training accuracy
+    - va_acc = final validation accuracy
+    - history = dict — 'loss' and 'val_acc', one value per epoch
+    """
     in_features = seq_train.shape[2]   # 2*L
     key    = jrandom.PRNGKey(SEED)
     params = init_gru_params(key, in_features, hidden)
