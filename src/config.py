@@ -1,23 +1,22 @@
 """
-config.py
----------
 All configuration dataclasses for every stage of the project.
-Import the one you need in each script or module.
 """
 
+# Imports
 from dataclasses import dataclass, field
 from typing import List
 import numpy as np
 
 
-# ============================================================================
-# STAGE 1 — TFIM NEURAL CONTROLLER
-# ============================================================================
+# ========================
+# TFIM NEURAL CONTROLLER
+# ========================
 
 @dataclass
 class TFIMConfig:
-    """Configuration for the TFIM neural controller (Stage 1)."""
-
+    """
+    Configuration for the TFIM neural controller 
+    """
     # System parameters
     num_qubits: int = 6
     J: float = 1.0           # Ising coupling
@@ -57,9 +56,9 @@ class TFIMConfig:
     num_eval_trajectories: int = 200
 
 
-# ============================================================================
-# STAGE 2 — TORIC CODE DECODER
-# ============================================================================
+# ===================
+# TORIC CODE DECODER
+# ===================
 
 @dataclass
 class ToricConfig:
@@ -93,22 +92,21 @@ class ToricConfig:
         return self.L * self.L
 
 
-# ============================================================================
-# STAGE 3 — MONITORED BRICKWORK CIRCUIT (STATEVECTOR)
-# ============================================================================
+# ==========================================
+# MONITORED BRICKWORK CIRCUIT (STATEVECTOR)
+# ==========================================
 
 @dataclass
 class BrickworkConfig:
     """
     Configuration for the Ising-type / random Clifford monitored circuit
-    simulated via Qiskit statevector (Stage 3, L ≲ 12).
+    simulated via Qiskit statevector (L ≲ 12)
     """
-
     # System
     L: int = 8
-    p_u: float = 1.0         # Gate application probability (1.0 = all gates)
+    p_u: float = 1.0 # Gate application probability (1.0 = all gates)
     depth: int = 32
-    meas_basis: str = 'X'    # 'X', 'Y', or 'Z'
+    meas_basis: str = 'X' # 'X', 'Y', or 'Z'
 
     # MIPT sweep
     p_m_values: List[float] = field(
@@ -120,23 +118,22 @@ class BrickworkConfig:
     L_values: List[int] = field(default_factory=lambda: [6, 8, 10, 12])
 
     # Phase classifier training
-    p_low: float = 0.05      # Training measurement rate for volume-law class
-    p_high: float = 0.30     # Training measurement rate for area-law class
+    p_low: float = 0.05   # Training measurement rate for volume-law class
+    p_high: float = 0.30  # Training measurement rate for area-law class
     n_train_samples: int = 400
     clf_epochs: int = 30
 
 
-# ============================================================================
-# STAGE 4 — STIM STABILISER BACKEND
-# ============================================================================
+# ========================
+# STIM STABILISER BACKEND
+# ========================
 
 @dataclass
 class StimConfig:
     """
     Configuration for the random Clifford circuit with Stim stabiliser
-    backend (Stage 4, L up to 64).
+    backend (L>12)
     """
-
     # MIPT sweep
     L_main: int = 16
     meas_basis: str = 'Z'
@@ -157,24 +154,23 @@ class StimConfig:
     # Trajectory counts
     n_traj_mipt: int = 80
     n_traj_scaling: int = 50
-    n_traj_data: int = 150     # per phase per difficulty
+    n_traj_data: int = 150  # per phase per difficulty
 
     # Classifier
     clf_epochs: int = 40
     clf_batch: int = 32
     clf_lr: float = 1e-3
-    sweep_n: int = 40          # trajectories per p_m in learnability sweep
+    sweep_n: int = 40  # trajectories per p_m in learnability sweep
 
 
-# ============================================================================
-# STAGE 5 — TEMPORAL ARCHITECTURES (TCN / GRU / CNN comparison)
-# ============================================================================
+# ====================================================
+# TEMPORAL ARCHITECTURES (TCN / GRU / CNN comparison)
+# ====================================================
 
 @dataclass
 class ArchConfig:
     """
     Configuration for the CNN / TCN / GRU architecture comparison
-    (Stage 5).
     """
 
     # Stim simulation (same defaults as StimConfig)
@@ -199,27 +195,25 @@ class ArchConfig:
     n_traj_delta: int = 200
 
 
-# ============================================================================
-# STAGE 6 — ADAPTIVE RL CONTROLLER
-# ============================================================================
+# =======================
+# ADAPTIVE RL CONTROLLER
+# =======================
 
 @dataclass
 class RLConfig:
     """
     Configuration for the REINFORCE adaptive feedback controller
-    (Stage 6).
     """
-
     # System sizes to train and evaluate
     L_values: List[int] = field(default_factory=lambda: [8, 12, 16, 24])
-    depth_fn: str = '4L'       # circuit depth as a multiple of L
+    depth_fn: str = '4L' # circuit depth as a multiple of L
 
     # Measurement budget
     k_values: List[float] = field(
-        default_factory=lambda: [0.1, 0.2, 0.3])  # k_per_layer / L fractions
+    default_factory=lambda: [0.1, 0.2, 0.3])  # k_per_layer / L fractions
 
     # Policy network
-    window: int = 4            # number of past layers in state
+    window: int = 4  # number of past layers in state
     hidden: int = 128
 
     # Supervised pre-training
@@ -236,7 +230,7 @@ class RLConfig:
 
     # Evaluation
     n_eval: int = 200
-    n_eval_high: int = 500         # High-stat evaluation at critical p_m
+    n_eval_high: int = 500 # High-stat evaluation at critical p_m
     high_stats_pm: List[float] = field(default_factory=lambda: [0.1, 0.2, 0.3])
 
     def depth(self, L: int) -> int:
