@@ -1,38 +1,42 @@
 """
-analysis/encoders.py
---------------------
 Measurement record encodings for the phase classifiers.
 
-Four encodings are used across Stages 3–5:
-  encode_flat     → MLP input (1D feature vector)
-  encode_2d       → CNN input (2-channel spatiotemporal image)
-  encode_temporal → TCN / GRU input (time-step sequence)
+List of encoders used across project:
+  1) encode_flat = MLP input (1D feature vector)
+  2) encode_2d = CNN input (2-channel spatiotemporal image)
+  3) encode_temporal = TCN / GRU input (time-step sequence)
 
 generate_data and generate_data_all build labelled datasets from
 Stim trajectories for the phase classifiers.
 """
-
+# Imports
 import numpy as np
 from typing import Dict
-
 from src.simulators.stim_clifford import run_trajectory_stim
 
-
-# ============================================================================
-# ENCODING FUNCTIONS
-# ============================================================================
+# =====================================
+# ENCODING FUNCTIONS (MLP,CNN,TCN/GRU)
+# =====================================
 
 def encode_flat(rec: np.ndarray) -> np.ndarray:
     """
-    Flatten the measurement record for MLP input.
+    Encode measurement record as a flat feature vector for MLP input.
 
-    Features (concatenated):
-      - was-measured mask : shape (depth × L,)
-      - outcomes          : shape (depth × L,)
-      - measurement density per layer : shape (depth,)
-      - mean outcome per layer        : shape (depth,)
+    Concatenates four feature groups:
+        wm = was-measured mask (depth × L,) —> 1 if measured, 0 if not
+        oc = outcomes (depth × L,) —> 0/1 if measured, 0 if not (uses wm to disambiguate)
+        md = measurement density (depth,) —> fraction of qubits measured per layer
+        of = mean outcome per layer (depth,) —> mean outcome where measured
 
-    Shape: (2·depth·L + 2·depth,)
+    Output shape: (2·depth·L + 2·depth,)
+
+    Parameters:
+    - rec = raw measurement record (depth, L)
+            [-1 if unmeasured, 0/1 if measurement outcome]
+
+    Returns:
+    - x = flattened feature vector ready for MLP input
+          (2·depth·L + 2·depth,)
     """
     depth, L = rec.shape
     wm = (rec >= 0).astype(np.float64)
@@ -48,11 +52,27 @@ def encode_flat(rec: np.ndarray) -> np.ndarray:
 
 def encode_2d(rec: np.ndarray) -> np.ndarray:
     """
-    Two-channel spatiotemporal image for CNN input.
-    Channel 0: was-measured mask.
-    Channel 1: outcomes (0 if not measured).
+    Encode measurement record as a two-channel spatiotemporal image
+    for CNN input.
 
-    Shape: (2, depth, L)
+    Treats the measurement record as an image with:
+    - time (circuit layers) along one spatial axis (depth)
+    - qubit index along the other spatial axis (L)
+    - two channels encoding complementary information:
+        
+        Channel 0 (was-measured mask) = 1 if measured, 0 otherwise
+        Channel 1 (outcomes) = 0/1 if measured, 0 otherwise
+                *use Channel 0 to disambiguate*
+
+    The CNN learns spatial patterns across both time and qubit index
+    simultaneously — e.g. clustering of measurements near the boundary,
+    or checkerboard patterns near criticality at p_m ≈ p_c.
+
+    Parameters:
+    - rec = raw measurement record (depth, L)
+            [-1 if unmeasured, 0/1 if measurement outcome]
+    Returns:
+    - x = two-channel image ready for CNN input (2, depth, L)
     """
     wm = (rec >= 0).astype(np.float32)
     oc = np.clip(rec, 0, 1).astype(np.float32)
@@ -61,34 +81,65 @@ def encode_2d(rec: np.ndarray) -> np.ndarray:
 
 def encode_temporal(rec: np.ndarray) -> np.ndarray:
     """
-    Causal sequence encoding for TCN / GRU input.
+    Encode measurement record as a causal sequence for TCN / GRU input.
 
-    At each time step t the input is a 2L-dimensional vector:
-        [was_measured(q0..qL-1), outcome(q0..qL-1)]
+    At each layer t the input is a 2L-dimensional vector:
 
-    Shape: (depth, 2·L)
+    x_t = [ (m_t⁰, m_t¹, ..., m_t^(L-1)) , 
+            (o_t⁰, o_t¹, ..., o_t^(L-1)) ] ∈ {0,1}^(2L)
+          i.e. ([was-measured] ​​⊕ [outcomes])
+          
+    Processed sequentially t = 0, 1, ..., depth-1, respecting the
+    causal ordering of the circuit, at time t the model sees only
+    measurements from layers t' ≤ t.
+
+    This is the most physically faithful encoding since in a real
+    experiment measurement outcomes arrive one layer at a time.
+
+    Parameters:
+    - rec = raw measurement record (depth, L)
+            [-1 if unmeasured, 0/1 if measurement outcome]
+
+    Returns:
+    x = causal sequence ready for TCN / GRU input (depth, 2·L)
     """
     wm = (rec >= 0).astype(np.float32)
     oc = np.clip(rec, 0, 1).astype(np.float32)
     return np.concatenate([wm, oc], axis=1)   # (depth, 2L)
 
-
-# ============================================================================
-# DATASET GENERATION
-# ============================================================================
+# ====================================================================
+# Dataset Generation — labelled trajectories for phase classification
+# ====================================================================
 
 def generate_data(L: int, depth: int, p_low: float, p_high: float,
                   n_samples: int, meas_basis: str = 'Z') -> Dict:
     """
-    Generate labelled trajectories for CNN and MLP classifiers.
+    Generate a balanced labelled dataset of measurement records for
+    binary phase classification.
 
-    n_samples // 2 trajectories at p_low (label 0, volume-law),
-    n_samples // 2 trajectories at p_high (label 1, area-law).
+    Two classes, n_samples/2 trajectories each:
+        - Label 0 (volume-law phase) = trajectories at p_m = p_low
+        - Label 1 (area-law phase) = trajectories at p_m = p_high
 
-    Returns dict with keys:
-        flat_train, flat_val  → MLP input arrays
-        img_train,  img_val   → CNN input arrays
-        y_train,    y_val     → labels
+    Each trajectory encoded in two formats:
+        - flat = encode_flat(rec) (MLP) 
+        - img = encode_2d(rec) (CNN) 
+
+    Dataset shuffled and split 80/20 train/validation
+
+    Parameters:
+    - L = number of qubits
+    - depth = number of circuit layers (typically 4L)
+    - p_low = measurement rate for volume-law class (p_low < p_c)
+    - p_high = measurement rate for area-law class   (p_high > p_c)
+    - n_samples = total number of trajectories (n_samples/2 per class)
+    - meas_basis = measurement basis ∈ {X,Y,Z}
+
+    Returns:
+     dict:
+      - flat_train, flat_val = MLP input arrays
+      - img_train,  img_val  = CNN input arrays  
+      - y_train, y_val = binary labels ∈ {0, 1}
     """
     flat_X, img_X, labels = [], [], []
     n_each = n_samples // 2
@@ -122,11 +173,37 @@ def generate_data(L: int, depth: int, p_low: float, p_high: float,
 def generate_data_all(L: int, depth: int, p_low: float, p_high: float,
                       n_samples: int, meas_basis: str = 'Z') -> Dict:
     """
-    Generate labelled trajectories with all four encodings
-    (flat, 2d, temporal) for CNN / MLP / TCN / GRU comparison.
+    Generate a balanced labelled dataset of measurement records in all
+    three encodings for the CNN / MLP / TCN / GRU architecture comparison.
 
-    Returns dict with keys:
-        flat_train/val, img_train/val, seq_train/val, y_train/val
+    Two classes, n_samples/2 trajectories each:
+        - Label 0 (volume-law phase) = trajectories at p_m = p_low
+        - Label 1 (area-law phase) = trajectories at p_m = p_high
+
+    Each trajectory encoded in three formats simultaneously:
+        - flat = encode_flat(rec) (MLP)
+        - img = encode_2d(rec) (CNN) 
+        - seq = encode_temporal(rec) (TCN/GRU)
+
+    All four architectures train on identical trajectories — only the
+    encoding differs — ensuring a fair comparison of inductive biases.
+
+    Dataset shuffled and split 80/20 train/validation
+
+    Parameters:
+    - L = number of qubits
+    - depth = number of circuit layers (typically 4L)
+    - p_low = measurement rate for volume-law class (p_low < p_c)
+    - p_high = measurement rate for area-law class (p_high > p_c)
+    - n_samples = total number of trajectories (n_samples/2 per class)
+    - meas_basis = measurement basis ∈ {X,Y,Z}
+
+    Returns:
+     dict:
+     - flat_train, flat_val = MLP input arrays
+     - img_train, img_val = CNN input arrays
+     - seq_train, seq_val = TCN/GRU input arrays
+     - y_train, y_val = binary labels ∈ {0, 1}
     """
     flat_X, img_X, seq_X, labels = [], [], [], []
     n_each = n_samples // 2
