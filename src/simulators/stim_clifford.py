@@ -1,6 +1,4 @@
 """
-simulators/stim_clifford.py
----------------------------
 Random Clifford brickwork circuit using the Stim stabiliser-tableau
 backend (Stages 4–6).
 
@@ -10,43 +8,52 @@ O(2ⁿ), allowing system sizes L up to 64+ within reasonable runtimes.
 All stages that previously copy-pasted gf2_rank / stabiliser_entropy /
 run_trajectory_stim should import from here instead.
 """
-
+# Imports
 import numpy as np
 import stim
 from typing import Dict, List
-
 from src.analysis.entropy import gf2_rank, stabiliser_entropy
 
 
-# ============================================================================
+# =======================
 # BRICKWORK LAYER HELPER
-# ============================================================================
+# =======================
 
 def apply_brickwork_layer(sim: stim.TableauSimulator, L: int, t: int,
                           use_ising: bool = False) -> None:
     """
-    Apply one brickwork sublayer of random 2-qubit Clifford gates.
+    Apply one sublayer of random 2-qubit Clifford gates in a brickwork
+    pattern to the Stim stabiliser tableau.
 
-    Even layers (t even): bonds (0,1), (2,3), ...
-    Odd layers  (t odd):  bonds (1,2), (3,4), ...
+    Alternates between even and odd bond sets based on layer index t:
+    t even = even bonds: (0,1), (2,3), (4,5), ...
+    t odd = odd bonds: (1,2), (3,4), (5,6), ...
 
-    Parameters
-    ----------
-    use_ising : bool
-        If True, apply the fixed Ising-type gate instead of a random
-        Clifford (used for the Ising-type ensemble in Stage 3).
-        Note: the Ising gate is not in the Clifford group — this flag
-        is reserved for future use with approximate Clifford proxies.
+    This brick-wall tiling ensures every neighbouring pair is entangled
+    on alternating layers, generating long-range correlations throughout
+    the chain.
+
+    Each bond receives an independently sampled uniformly random
+    2-qubit Clifford gate from the 720-element Clifford group C_2:
+
+    U_{i,i+1} ~ Uniform(C_2)
+
+    Parameters:
+    sim = Stim TableauSimulator holding current stabiliser state
+    L = number of qubits
+    t = layer index — determines even/odd bond offset via t % 2 (t mod 2)
+    use_ising : bool (default False)
+                Reserved for future use — Ising gate is not in C_2
+                so cannot be applied via Stim tableau directly
     """
     offset = t % 2
     for i in range(offset, L - 1, 2):
         cliff = stim.Tableau.random(2)
         sim.do_tableau(cliff, [i, i + 1])
 
-
-# ============================================================================
-# SINGLE TRAJECTORY
-# ============================================================================
+# =======================================================
+# Single Trajectory — Stim stabiliser tableau simulation
+# =======================================================
 
 def run_trajectory_stim(L: int, depth: int, p_m: float,
                         meas_basis: str = 'Z') -> Dict:
@@ -57,19 +64,17 @@ def run_trajectory_stim(L: int, depth: int, p_m: float,
     drawn and applied. Measurements are performed in the specified basis
     with probability p_m per qubit per layer.
 
-    Parameters
-    ----------
-    L          : number of qubits
-    depth      : number of circuit layers
-    p_m        : measurement probability per qubit per layer
-    meas_basis : 'Z', 'X', or 'Y'
+    Parameters:
+    L = number of qubits
+    depth = number of circuit layers
+    p_m = measurement probability per qubit per layer
+    meas_basis = basis ∈ {X,Y,Z}
 
-    Returns
-    -------
-    dict:
-        'entropy_history'    : S(L/2) after each layer
-        'measurement_record' : (depth, L) int8 array (-1 = unmeasured)
-        'final_entropy'      : S(L/2) at end of circuit
+    Returns:
+      dict:
+        - 'entropy_history' = S(L/2) after each layer
+        - 'measurement_record' = (depth, L) array where (-1 = unmeasured)
+        - 'final_entropy' = S(L/2) at end of circuit
     """
     sim = stim.TableauSimulator()
     sim.set_num_qubits(L)
@@ -111,18 +116,37 @@ def run_trajectory_stim(L: int, depth: int, p_m: float,
     }
 
 
-# ============================================================================
-# MIPT SWEEP
-# ============================================================================
+# =====================================================================
+# MIPT Sweep — trajectory-averaged S(L/2) across measurement rates p_m
+# =====================================================================
 
 def run_mipt_sweep(L: int, depth: int, pm_values: List[float],
                    n_traj: int, meas_basis: str = 'Z') -> Dict:
     """
-    Sweep over measurement rates and compute trajectory-averaged
-    half-chain entropy S(L/2).
+    Sweep over measurement rates p_m and compute trajectory-averaged
+    half-chain entanglement entropy S(L/2).
+    For each p_m runs n_traj independent trajectories and computes:
 
-    Returns dict with keys: 'p_m', 'mean_S', 'std_S', 'sem_S',
-                             'mean_history'
+    ⟨S(L/2)⟩ = (1/N) Σ_i S_i(L/2)
+
+    Averaging over trajectories is necessary because each trajectory
+    is a stochastic quantum process — individual runs fluctuate
+    significantly near the critical point p_c.
+
+    Parameters:
+    - L = number of qubits
+    - depth = number of circuit layers (typically 4L)
+    - pm_values = list of measurement rates p_m ∈ [0, 1] to sweep
+    - n_traj = number of trajectories per p_m
+    - meas_basis = measurement basis ∈ {X,Y,Z}
+
+    Returns:
+     dict:
+     - p_m = list of measurement rates swept
+     - mean_S = ⟨S(L/2)⟩ at each p_m
+     - std_S = standard deviation across trajectories
+     - sem_S = standard error = std_S / sqrt(n_traj)
+     - mean_history = mean S(L/2) vs layer averaged across trajectories
     """
     results = {'p_m': [], 'mean_S': [], 'std_S': [], 'sem_S': [],
                'mean_history': []}
@@ -152,12 +176,32 @@ def run_mipt_sweep(L: int, depth: int, pm_values: List[float],
 
 def run_scaling(L_values: List[int], pm_values: List[float],
                 n_traj: int, meas_basis: str = 'Z') -> Dict:
-    """
-    Run MIPT sweeps for multiple system sizes.
+   """
+    Run MIPT sweeps across multiple system sizes to perform
+    finite-size scaling analysis.
 
-    Returns {L: mipt_dict} where each mipt_dict is the output of
-    run_mipt_sweep.
+    For each L runs a full p_m sweep via 'run_mipt_sweep()', enabling:
+        - Crossing analysis of S(L/2)/L vs p_m to extract p_c
+        - Finite-size scaling collapse via ansatz:
+              S(L/2) = f((p_m - p_c) · L^{1/ν})
+        - Estimation of critical exponent ν
+
+    Circuit depth scales as 4L for each system size, ensuring
+    the circuit is deep enough to reach the steady state before
+    measurements are applied.
+
+    Parameters:
+    - L_values = system sizes to sweep e.g. [8, 16, 32, 64]
+    - pm_values = measurement rates p_m ∈ [0, 1]
+    - n_traj = number of trajectories per (L, p_m) point
+    - meas_basis = measurement basis ∈ {X,Y,Z}
+
+    Returns:
+     dict : {L: mipt_dict} where each mipt_dict contains
+           p_m, mean_S, std_S, sem_S, mean_history
+           as returned by run_mipt_sweep
     """
+
     import time
     scaling = {}
     for L in L_values:
