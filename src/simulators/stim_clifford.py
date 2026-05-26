@@ -176,7 +176,7 @@ def run_mipt_sweep(L: int, depth: int, pm_values: List[float],
 
 def run_scaling(L_values: List[int], pm_values: List[float],
                 n_traj: int, meas_basis: str = 'Z') -> Dict:
-   """
+    """
     Run MIPT sweeps across multiple system sizes to perform
     finite-size scaling analysis.
 

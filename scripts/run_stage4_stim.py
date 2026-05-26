@@ -1,6 +1,3 @@
-PY
-Copy
-
 """
 scripts/run_stage4_stim.py
 --------------------------

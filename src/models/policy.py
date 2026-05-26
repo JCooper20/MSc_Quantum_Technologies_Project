@@ -35,6 +35,7 @@ import stim
 from typing import Dict, List, Tuple
 from src.analysis.entropy import stabiliser_entropy
 from src.training.adam import AdamOptimizer
+from src.models.phase_classifiers import causal_conv1d
 
 
 # =================================================
@@ -121,6 +122,125 @@ def policy_forward(params, x):
     h = jax.nn.relu(x @ params['w1'] + params['b1'])
     h = jax.nn.relu(h @ params['w2'] + params['b2'])
     return h @ params['w3'] + params['b3']
+
+
+# ============================================================
+# TCN Policy Network — causal dilated convolutions over window
+# ============================================================
+
+def init_tcn_policy_params(key, L: int, window: int,
+                            hidden: int = 64, kernel_size: int = 3):
+    """
+    Initialise a causal TCN policy network for adaptive qubit selection.
+
+    Architecture:
+        x  (batch, window, 2L)
+        → transpose  (batch, 2L, window)
+        → CausalConv proj: 2L → hidden, dilation=1     (batch, hidden, window)
+        → ResBlock 0: CausalConv(hidden→hidden), dilation=1
+        → ResBlock 1: CausalConv(hidden→hidden), dilation=2
+        → ResBlock 2: CausalConv(hidden→hidden), dilation=4
+        → final timestep  (batch, hidden)
+        → FC(L) → scores ∈ ℝ^L                         (batch, L)
+
+    Receptive field of stacked dilations 1,2,4 with kernel_size=3:
+        dilation=1 : covers 3 steps
+        dilation=2 : covers 5 steps
+        dilation=4 : covers 9 steps
+    Total receptive field ≥ window for window ≤ 9.
+
+    Weights ~ N(0, 0.02²), biases = 0.
+
+    Parameters:
+    - key         = JAX PRNG key
+    - L           = number of qubits (output dimension)
+    - window      = history window length W (input time steps)
+    - hidden      = number of TCN channels throughout (default 64)
+    - kernel_size = causal filter width k (default 3)
+
+    Returns:
+    - params = dict with keys:
+        proj_w, proj_b,
+        b{0,1,2}_conv1_w, b{0,1,2}_conv1_b,
+        b{0,1,2}_conv2_w, b{0,1,2}_conv2_b,
+        fc_w, fc_b
+    """
+    keys = jrandom.split(key, 20)
+    s    = 0.02
+    k    = kernel_size
+    p    = {}
+
+    # Input projection: 2L → hidden  (kernel=1, no causal padding needed)
+    p['proj_w'] = jrandom.normal(keys[0], (hidden, 2 * L, 1)) * s
+    p['proj_b'] = jnp.zeros(hidden)
+
+    # Three residual blocks with dilations 1, 2, 4
+    for i in range(3):
+        ki = keys[1 + i * 4: 5 + i * 4]
+        p[f'b{i}_conv1_w'] = jrandom.normal(ki[0], (hidden, hidden, k)) * s
+        p[f'b{i}_conv1_b'] = jnp.zeros(hidden)
+        p[f'b{i}_conv2_w'] = jrandom.normal(ki[1], (hidden, hidden, k)) * s
+        p[f'b{i}_conv2_b'] = jnp.zeros(hidden)
+
+    # Output projection: hidden → L  (one score per qubit)
+    p['fc_w'] = jrandom.normal(keys[13], (hidden, L)) * s
+    p['fc_b'] = jnp.zeros(L)
+    return p
+
+
+def tcn_policy_forward(params, x):
+    """
+    Forward pass of the causal TCN policy network.
+
+    Reuses causal_conv1d from phase_classifiers.py — causality is enforced
+    by left-padding only, so the representation at window step t sees only
+    history steps t' ≤ t.  The final timestep hidden state is read out
+    to score qubits for the current layer:
+
+        Data flow:
+            x  (batch, window, 2L)
+            → transpose  (batch, 2L, window)          — channels-first for conv
+            → ReLU(CausalConv proj, dilation=1)        (batch, hidden, window)
+            → ResBlock 0:
+                h₁ = ReLU(CausalConv, dilation=1)
+                h  = ReLU(CausalConv(h₁) + skip)
+            → ResBlock 1:
+                h₁ = ReLU(CausalConv, dilation=2)
+                h  = ReLU(CausalConv(h₁) + skip)
+            → ResBlock 2:
+                h₁ = ReLU(CausalConv, dilation=4)
+                h  = ReLU(CausalConv(h₁) + skip)
+            → h[:, :, -1]  (batch, hidden)             — read final timestep
+            → FC(L)         (batch, L)                 — qubit scores
+
+    Output scores are unnormalised — converted to selection probabilities
+    via softmax during Plackett-Luce sampling (identical to MLP policy).
+
+    Parameters:
+    - params = dict from init_tcn_policy_params()
+    - x      = measurement history window (batch, window, 2L)
+
+    Returns:
+    - scores = unnormalised qubit selection scores (batch, L)
+    """
+    # Transpose to channels-first: (batch, 2L, window)
+    h = jnp.transpose(x, (0, 2, 1))
+
+    # Input projection
+    h = jax.nn.relu(causal_conv1d(h, params['proj_w'], params['proj_b'],
+                                   dilation=1))
+
+    # Three dilated residual blocks with dilations 1, 2, 4
+    for i, dil in enumerate([1, 2, 4]):
+        skip = h
+        h1   = jax.nn.relu(causal_conv1d(h,  params[f'b{i}_conv1_w'],
+                                              params[f'b{i}_conv1_b'], dil))
+        h    = jax.nn.relu(causal_conv1d(h1, params[f'b{i}_conv2_w'],
+                                              params[f'b{i}_conv2_b'], dil) + skip)
+
+    # Read final timestep → qubit scores
+    h = h[:, :, -1]                               # (batch, hidden)
+    return h @ params['fc_w'] + params['fc_b']    # (batch, L)
 
 
 # ==============================================================
@@ -314,6 +434,120 @@ def run_episode_adaptive(L: int, depth: int, k_per_layer: int,
         'final_entropy':     stabiliser_entropy(sim, L, L // 2),
         'entropy_snapshots': entropy_snapshots,
         'meas_rate':         k_per_layer / L, }
+
+# ================================================================
+# TCN Episode Runner — adaptive episode using TCN policy backbone
+# ================================================================
+
+def run_episode_adaptive_tcn(L: int, depth: int, k_per_layer: int,
+                              policy_params,
+                              window: int = 4,
+                              entropy_interval: int = 0) -> Dict:
+    """
+    Adaptive episode using the causal TCN policy to select k qubits per layer.
+
+    Identical protocol to run_episode_adaptive, but the state presented to
+    the policy is a windowed 2D array rather than a flat vector:
+
+        s_t ∈ ℝ^{W × 2L}  (window of measurement masks + outcomes)
+
+    At each layer t:
+        1. Build window tensor s_t ∈ ℝ^{W × 2L} from the last W layers:
+               s_t[w, :L]  = was_measured[t-W+w]   — binary mask
+               s_t[w, L:]  = outcomes[t-W+w]        — measurement results
+           Earlier layers are zero-padded when t < W.
+        2. Score qubits: s = tcn_policy_forward(params, s_t[None]) ∈ ℝ^L
+        3. Plackett-Luce top-k sampling (same as run_episode_adaptive)
+        4. Execute measurements, record outcomes
+
+    Parameters:
+    - L               = number of qubits
+    - depth           = number of circuit layers
+    - k_per_layer     = measurement budget k per layer
+    - policy_params   = TCN parameter dict from init_tcn_policy_params()
+    - window          = history window length W
+    - entropy_interval = compute S(L/2) every this many layers (0 = end only)
+
+    Returns:
+    - dict:
+        - states            = window tensors (depth, window, 2L)
+        - chosen            = binary measurement mask (depth, L)
+        - log_probs         = Plackett-Luce log P per layer (depth,)
+        - final_entropy     = S(L/2) at end of trajectory
+        - entropy_snapshots = intermediate entropy values [(t, S(t))]
+        - meas_rate         = k_per_layer / L
+    """
+    sim = stim.TableauSimulator()
+    sim.set_num_qubits(L)
+
+    was_measured = np.zeros((depth, L), dtype=np.float32)
+    outcomes     = np.zeros((depth, L), dtype=np.float32)
+    states_list, chosen_list, log_probs_list = [], [], []
+    entropy_snapshots = []
+
+    for t in range(depth):
+        _apply_layer(sim, L, t)
+
+        # Build window tensor s_t ∈ ℝ^{W × 2L}  (zero-pad when t < W)
+        state = np.zeros((window, 2 * L), dtype=np.float32)
+        for w in range(window):
+            li = t - window + w
+            if li >= 0:
+                state[w, :L]  = was_measured[li]
+                state[w, L:]  = outcomes[li]
+        states_list.append(state)
+
+        # Score qubits via TCN
+        scores = np.array(tcn_policy_forward(policy_params,
+                                              jnp.array(state[None, :, :]))[0])
+        exp_s  = np.exp(scores - scores.max())
+        # Small probability floor prevents underflow to exact zero when
+        # TCN outputs extreme scores, ensuring k non-zero entries exist
+        exp_s  = np.clip(exp_s, 1e-10, None)
+        probs  = exp_s / exp_s.sum()
+
+        # Plackett-Luce top-k sampling
+        if 0 < k_per_layer < L:
+            chosen = np.random.choice(L, size=k_per_layer,
+                                       replace=False, p=probs)
+        elif k_per_layer >= L:
+            chosen = np.arange(L)
+        else:
+            chosen = np.array([], dtype=int)
+
+        # Log-prob of selection
+        lp  = 0.0
+        rem = probs.copy()
+        for q in chosen:
+            lp += np.log(rem[q] + 1e-10)
+            rem[q] = 0.0
+            s = rem.sum()
+            if s > 0:
+                rem /= s
+
+        chosen_vec         = np.zeros(L, dtype=np.float32)
+        chosen_vec[chosen] = 1.0
+        chosen_list.append(chosen_vec)
+        log_probs_list.append(lp)
+
+        # Execute measurements
+        for q in chosen:
+            result             = sim.measure(q)
+            was_measured[t, q] = 1.0
+            outcomes[t, q]     = float(result)
+
+        if entropy_interval > 0 and (t + 1) % entropy_interval == 0:
+            entropy_snapshots.append(
+                (t, stabiliser_entropy(sim, L, L // 2)))
+
+    return {
+        'states':            np.array(states_list),
+        'chosen':            np.array(chosen_list),
+        'log_probs':         np.array(log_probs_list),
+        'final_entropy':     stabiliser_entropy(sim, L, L // 2),
+        'entropy_snapshots': entropy_snapshots,
+        'meas_rate':         k_per_layer / L, }
+
 
 # ==============================================
 # Internal Helper — brickwork layer application
