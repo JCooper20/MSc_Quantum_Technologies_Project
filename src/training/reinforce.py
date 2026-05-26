@@ -635,12 +635,41 @@ def reinforce_update_tcn(params, states: np.ndarray,
     return grad(loss_fn)(params)
 
 
+def clip_grads(grads, max_norm: float = 1.0):
+    """
+    Clip a gradient pytree by global L2 norm.
+
+    Computes the global norm across all leaves of the gradient pytree
+    and rescales uniformly if it exceeds max_norm:
+
+        global_norm = sqrt( Σ_i ||g_i||² )
+        scale       = min(1, max_norm / global_norm)
+        g_i         ← scale · g_i
+
+    This keeps update magnitudes bounded without changing gradient
+    direction, stabilising training when loss curvature is large.
+
+    Parameters:
+    - grads    = gradient pytree (same structure as policy params)
+    - max_norm = clipping threshold (default 1.0)
+
+    Returns:
+    - clipped gradient pytree (same structure as grads)
+    """
+    leaves      = jax.tree.leaves(grads)
+    global_norm = jnp.sqrt(sum(jnp.sum(g ** 2) for g in leaves))
+    scale       = jnp.minimum(1.0, max_norm / (global_norm + 1e-8))
+    return jax.tree.map(lambda g: g * scale, grads)
+
+
 def train_policy_tcn(L: int, depth: int, k_per_layer: int,
                      n_batches: int = 150, batch_size: int = 48,
                      lr: float = 3e-4, window: int = 4,
                      hidden: int = 64, kernel_size: int = 3,
                      baseline_alpha: float = 0.05,
                      entropy_coeff: float = 0.01,
+                     grad_clip: float = None,
+                     temperature: float = 1.0,
                      pretrain_episodes: int = 500,
                      pretrain_epochs: int = 30) -> Tuple:
     """
@@ -675,6 +704,12 @@ def train_policy_tcn(L: int, depth: int, k_per_layer: int,
     - kernel_size       = causal filter width k
     - baseline_alpha    = EMA decay α for variance reduction
     - entropy_coeff     = entropy regularisation coefficient β
+    - grad_clip         = global norm gradient clipping threshold
+                          (None = no clipping; 1.0 recommended for TCN)
+    - temperature       = Plackett-Luce softmax temperature T:
+                              p_q ∝ exp(s_q / T)
+                          T > 1 broadens selection, reducing variance.
+                          Passed through to run_episode_adaptive_tcn.
     - pretrain_episodes = episodes for supervised data generation
     - pretrain_epochs   = epochs for supervised pre-training
 
@@ -713,7 +748,7 @@ def train_policy_tcn(L: int, depth: int, k_per_layer: int,
         for _ in range(batch_size):
             ep = run_episode_adaptive_tcn(
                 L, depth, k_per_layer, params,
-                window=window)
+                window=window, temperature=temperature)
             batch_entropies.append(ep['final_entropy'])
             all_states.append(ep['states'])
             all_lp.append(ep['log_probs'])
@@ -728,6 +763,10 @@ def train_policy_tcn(L: int, depth: int, k_per_layer: int,
             g          = reinforce_update_tcn(params, states, lp, advantage)
             total_grad = jax.tree.map(lambda tg, gi: tg + gi / batch_size,
                                        total_grad, g)
+
+        # Optional gradient clipping by global norm
+        if grad_clip is not None:
+            total_grad = clip_grads(total_grad, grad_clip)
 
         params = opt.step(params, total_grad)
 

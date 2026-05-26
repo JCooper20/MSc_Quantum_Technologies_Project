@@ -442,7 +442,8 @@ def run_episode_adaptive(L: int, depth: int, k_per_layer: int,
 def run_episode_adaptive_tcn(L: int, depth: int, k_per_layer: int,
                               policy_params,
                               window: int = 4,
-                              entropy_interval: int = 0) -> Dict:
+                              entropy_interval: int = 0,
+                              temperature: float = 1.0) -> Dict:
     """
     Adaptive episode using the causal TCN policy to select k qubits per layer.
 
@@ -467,6 +468,10 @@ def run_episode_adaptive_tcn(L: int, depth: int, k_per_layer: int,
     - policy_params   = TCN parameter dict from init_tcn_policy_params()
     - window          = history window length W
     - entropy_interval = compute S(L/2) every this many layers (0 = end only)
+    - temperature     = softmax temperature T for Plackett-Luce sampling:
+                            p_q ∝ exp(s_q / T)
+                        T > 1 flattens the distribution (more exploration),
+                        T < 1 sharpens it.  Default T=1.0 (no scaling).
 
     Returns:
     - dict:
@@ -497,10 +502,11 @@ def run_episode_adaptive_tcn(L: int, depth: int, k_per_layer: int,
                 state[w, L:]  = outcomes[li]
         states_list.append(state)
 
-        # Score qubits via TCN
+        # Score qubits via TCN; temperature T scales logits before softmax:
+        #     p_q ∝ exp(s_q / T) — T > 1 broadens, T < 1 sharpens
         scores = np.array(tcn_policy_forward(policy_params,
                                               jnp.array(state[None, :, :]))[0])
-        exp_s  = np.exp(scores - scores.max())
+        exp_s  = np.exp((scores - scores.max()) / temperature)
         # Small probability floor prevents underflow to exact zero when
         # TCN outputs extreme scores, ensuring k non-zero entries exist
         exp_s  = np.clip(exp_s, 1e-10, None)
