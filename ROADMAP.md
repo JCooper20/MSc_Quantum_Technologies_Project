@@ -8,7 +8,7 @@ Stages 1–2 complete. Stage 3 (Stim backend) and Stage 4 (TCN/GRU) implemented 
 
 ## Phase A — Scalable Simulation & Finite-Size Scaling
 
-**Goal:** Replace Qiskit statevector backend (L ≲ 12) with Stim stabiliser-tableau backend to access L = 8, 16, 32, 64.
+**Goal:** Replace Qiskit statevector (L ≲ 12) with Stim stabiliser-tableau backend to access L = 8, 16, 32, 64.
 
 **Tasks:**
 - [ ] Validate Stim entropy results against Qiskit statevector at L = 6, 8, 10
