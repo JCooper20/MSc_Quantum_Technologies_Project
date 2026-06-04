@@ -106,3 +106,98 @@ def stabiliser_entropy(sim: stim.TableauSimulator, L: int, n_A: int) -> float:
 def compute_half_chain_entropy(sim: stim.TableauSimulator, L: int) -> float:
     """Convenience wrapper: S(L/2) for the current state."""
     return stabiliser_entropy(sim, L, L // 2)
+
+# ============================================================
+# Tripartite Mutual Information — diagnostic for MIPT order
+# ============================================================
+
+def stabiliser_entropy_region(sim: stim.TableauSimulator, L: int,
+                               region: list) -> float:
+    """
+    Von Neumann entropy S(A) for an arbitrary contiguous subsystem A
+    specified by a sorted list of qubit indices.
+
+    Extends stabiliser_entropy to non-half-chain cuts by permuting
+    the stabiliser tableau so that region qubits appear first, then
+    applying the standard rank formula:
+        S(A) = rank(M_B) - |B|
+    where M_B is the (L × 2|B|) Pauli matrix restricted to the
+    complement B = {0,...,L-1} \\ A, and rank is over GF(2).
+    """
+    region_set = set(region)
+    complement = [q for q in range(L) if q not in region_set]
+    n_B = len(complement)
+    n_A = len(region)
+
+    if n_A == 0 or n_B == 0:
+        return 0.0
+
+    stabilisers = sim.canonical_stabilizers()
+    M_B = np.zeros((L, 2 * n_B), dtype=np.bool_)
+
+    for i, stab in enumerate(stabilisers):
+        xs, zs = stab.to_numpy()
+        for j, q in enumerate(complement):
+            M_B[i, j]        = xs[q]
+            M_B[i, n_B + j]  = zs[q]
+
+    rank = gf2_rank(M_B)
+    S    = rank - n_B
+    return float(max(0, min(S, min(n_A, n_B))))
+
+
+def tripartite_mutual_info(sim: stim.TableauSimulator, L: int) -> float:
+    """
+    Tripartite mutual information I₃(A:B:C) using a 4-region geometry
+    where A, B, C are the first three equal quarters and D (the fourth
+    quarter) is traced out.
+
+    Partition into four equal quarters of length L/4:
+        A = {0,       ..., L/4 - 1}
+        B = {L/4,     ..., L/2 - 1}
+        C = {L/2,     ..., 3L/4 - 1}
+        D = {3L/4,    ..., L - 1}      ← traced out
+
+    Definition:
+        I₃(A:B:C) = S(A) + S(B) + S(C)
+                  - S(AB) - S(BC) - S(AC)
+                  + S(ABC)
+
+    The 4-region geometry is necessary for a non-trivial I₃ — if A, B, C
+    exhausted the full chain, the pure-state identity S(AB) = S(C) etc.
+    would force I₃ ≡ 0 algebraically. With D traced out:
+        S(ABC) = S(D)  ≠ 0  in general
+
+    Physical interpretation:
+        I₃ < 0  →  volume-law phase — multipartite entanglement is extensive
+        I₃ ≈ 0  →  area-law phase  — entanglement is short-range
+        I₃ crosses zero near the critical measurement rate p_c.
+
+    This geometry follows Zabalo et al. (PRB 102, 064305, 2020) and
+    Li, Chen, Fisher (PRB 100, 134306, 2019).
+
+    Requires L divisible by 4 — raises ValueError otherwise.
+    """
+    if L % 4 != 0:
+        raise ValueError(
+            f"L must be divisible by 4 for the 4-region I₃ geometry; got L={L}")
+
+    q = L // 4
+    A  = list(range(0,     q))
+    B  = list(range(q,     2 * q))
+    C  = list(range(2 * q, 3 * q))
+    # D = range(3q, L) — traced out; S(ABC) = S(D) via pure-state complementarity
+    AB = A + B
+    BC = B + C
+    AC = A + C
+    ABC = A + B + C
+
+    S_A   = stabiliser_entropy_region(sim, L, A)
+    S_B   = stabiliser_entropy_region(sim, L, B)
+    S_C   = stabiliser_entropy_region(sim, L, C)
+    S_AB  = stabiliser_entropy_region(sim, L, AB)
+    S_BC  = stabiliser_entropy_region(sim, L, BC)
+    S_AC  = stabiliser_entropy_region(sim, L, AC)
+    S_ABC = stabiliser_entropy_region(sim, L, ABC)    # = S(D) for a pure state
+
+    return S_A + S_B + S_C - S_AB - S_BC - S_AC + S_ABC
