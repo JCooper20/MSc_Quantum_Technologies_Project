@@ -1,13 +1,12 @@
 """
-Fully-connected (random perfect-matching) random-Clifford circuit using
-the Stim stabiliser-tableau backend.
+Fully-connected random-Clifford circuit using the Stim stabiliser-tableau
+backend.
 
-Note: this is distinct from the all-to-all "bag-of-bits" circuit in
-scripts/all_to_all_clifford_mipt.py. Here every qubit is paired once per
-layer (L/2 gates per layer, time measured in layers); there, a single
-random pair is acted on per elementary operation and time is measured in
-units of N elementary ops. The two are related fully-connected
-constructions but not identical models.
+This is the "layered" fully-connected construction: at each layer all L
+qubits are simultaneously paired into a random perfect matching and a
+random 2-qubit Clifford is applied to each of the L/2 pairs, with one
+unit of time corresponding to one layer.
+
 """
 
 # Imports
@@ -31,21 +30,20 @@ def run_trajectory_fc(L: int, depth: int, p_m: float) -> Dict:
     is drawn and a random 2-qubit Clifford is applied to each pair:
 
         π_t ~ Uniform(perfect matchings of {0,...,L-1})
-        U_{a,b} ~ Uniform(C_2)    for each pair (a,b) ∈ π_t
+        U_{a,b} ~ Uniform(C_2) for each pair (a,b) ∈ q
 
     When L is odd the unpaired qubit receives no gate that layer.
     Each matching is constructed by shuffling all L qubit indices and
-    pairing them sequentially: (π[0],π[1]), (π[2],π[3]), ...
+    pairing them sequentially: (q[0],q[1]), (q[2],q[3]), ...
 
-    This geometry has no spatial locality — every qubit can interact
+    This geometry has no spatial locality, every qubit can interact
     with every other qubit, so entanglement spreads maximally fast.
     The resulting steady state is expected to be deep in the volume-law
-    phase for all p_m < p_c, with p_c shifted to higher values compared
-    to the 1D brickwork circuit.
+    phase for p_m < p_c.
 
     After gates, each qubit is measured independently:
 
-        m_q ~ Bernoulli(p_m)    ∀ q ∈ {0,...,L-1}
+        m_q ~ Bernoulli(p_m)  q ∈ {0,...,L-1}
 
     Entanglement entropy is computed on the standard bipartition:
 
