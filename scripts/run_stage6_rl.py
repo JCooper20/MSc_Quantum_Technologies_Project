@@ -6,32 +6,30 @@ at each circuit layer, targeting high entanglement (volume-law) at
 measurement rates that would otherwise drive area-law behaviour.
 
 Running this trains a policy for each (L, k) in RLConfig, evaluates it
-against boundary and random baselines, saves the numerical results to
-results/rl_controller.json, and writes a training-curve and an
-entropy-trajectory figure per configuration into results/figures/.
+against boundary and random baselines, saves the numerical results 
+and writes a training-curve and an entropy-trajectory.
 """
 
+# Imports 
 import os
 import json
 import time
-
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-
 from src.config import RLConfig
 from src.models.policy import (
     run_episode_random, run_episode_boundary, run_episode_adaptive,
-    policy_forward, init_policy_params, boundary_scores,
-)
+    policy_forward, init_policy_params, boundary_scores,)
 from src.training.reinforce import train_policy
 from src.analysis.entropy import stabiliser_entropy
 
 
 def evaluate(params, L: int, depth: int, k_per_layer: int,
              n_eval: int, window: int = 4) -> dict:
-    """Compare adaptive vs random vs boundary at matched measurement rate.
+    """
+    Compare adaptive vs random vs boundary at matched measurement rate.
 
     Also retains the full per-layer entropy history of the first adaptive
     episode (sample_trajectory) so the entropy-trajectory figure can be
@@ -87,24 +85,19 @@ def _save_fig(fig, stem: str, outdir: str = "results/figures") -> None:
 
 def make_plots(all_results: list) -> None:
     """
-    Produce the Stage 6 figures from the collected results, one pair per
-    (L, k) configuration:
+    generate  two figures for each (L, k) run, into results:
 
-        stage6_training_curve_L{L}_k{k} : training entropy vs batch --
-            shows the policy learning to hold entanglement over training.
-        stage6_entropy_trajectory_L{L}_k{k} : S(t) vs circuit layer for a
-            single trained episode -- shows the adaptive controller
-            sustaining entropy across the circuit, with the boundary and
-            random baselines' final values marked for comparison.
+    - stage6_training_curve_L{L}_k{k} =  entropy vs training batch (shows the policy learning)
+    - stage6_entropy_trajectory_L{L}_k{k} = entropy vs circuit layer for one trained run, with
+                                            the boundary and random baselines marked
 
-    Figures are written to results/figures/ as PNG + PDF. A configuration
-    is skipped silently if the data needed for a panel is unavailable.
+    A figure is skipped if its data isn't available
     """
     for r in all_results:
         L, k = r['L'], r['k']
         e = r['eval']
 
-        # --- training curve (entropy per training batch) ---
+        # training curve (entropy per training batch) 
         hist = r.get('training_entropy')
         if hist:
             fig, ax = plt.subplots(figsize=(8, 5))
@@ -114,7 +107,7 @@ def make_plots(all_results: list) -> None:
             ax.set_title(fr"Stage 6 training curve  ($L={L}$, $k={k}$)")
             _save_fig(fig, f"stage6_training_curve_L{L}_k{k}")
 
-        # --- entropy trajectory of one trained episode ---
+        # entropy trajectory of one trained episode 
         traj = e.get('sample_trajectory')
         if traj is not None:
             fig, ax = plt.subplots(figsize=(8, 5))
