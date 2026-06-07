@@ -1,42 +1,32 @@
 """
-Runner for the monitored all-to-all Clifford MIPT (purification probe).
+Runner for the monitored all-to-all Clifford circuit (purification probe).
 
 Sweeps system sizes N and measurement rates r, averages the reference
-entropy S_R over trajectories, and plots the results. Drives the
-simulator in src/simulators/all_to_all.py.
+entropy S_R over trajectories, and plots the results. 
 
-Run from the repository root:
-    python scripts/run_all_to_all.py
-
-(No on-disk checkpointing -- intended for the small/medium N runs used to
-establish the physics. For long N=512 runs, add resume logic back in.)
-
-Author: Joseph Cooper, MSc Quantum Technologies, UCL.
+Drives the simulator in src/simulators/all_to_all.py
 """
 
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple
-
 import numpy as np
 import stim
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-
 from src.analysis.entropy import stabiliser_entropy_region
-from src.simulators.all_to_all import (
-    build_initial_bell_state, make_sample_times, run_single_trajectory,
-)
-
-
+from src.simulators.all_to_all import (build_initial_bell_state, make_sample_times, 
+                                       run_single_trajectory,)
 # =====================================================================
 # Configuration
 # =====================================================================
 
 @dataclass
 class Config:
-    """All sweep parameters live here."""
+    """
+    All sweep parameters
+    """
     N_values: List[int] = field(default_factory=lambda: [8, 16, 32, 64])
     r_values: List[float] = field(default_factory=lambda:
         [0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90])
@@ -45,7 +35,7 @@ class Config:
     n_log_times: int = 14         # log-spaced sample times
     n_lin_times: int = 10         # linearly-spaced sample times
     seed: int = 12345
-    outdir: str = "outputs"
+    outdir: str = str(REPO_ROOT / "results" / "figures" / "all_to_all")
 
 
 # =====================================================================
@@ -53,7 +43,9 @@ class Config:
 # =====================================================================
 
 def validate() -> None:
-    """Cheap correctness checks; run before any sweep."""
+    """
+    Cheap correctness checks
+    """
     print("Validation:")
 
     sim = build_initial_bell_state(1)
@@ -68,13 +60,11 @@ def validate() -> None:
     assert abs(stabiliser_entropy_region(sim, 8, list(range(4, 8))) - 4.0) < 1e-9
     print("  [PASS] N=4 Bell pairs       S_R = 4")
 
-    out = run_single_trajectory(N=8, r=0.0, sample_times=[1, 4, 8],
-                                t_max=8, seed=1)
+    out = run_single_trajectory(N=8, r=0.0, sample_times=[1, 4, 8],t_max=8, seed=1)
     assert np.allclose(out, 8.0, atol=1e-9)
     print("  [PASS] r=0  -> S_R stays 8")
 
-    out = run_single_trajectory(N=8, r=1.0, sample_times=[2, 4, 8],
-                                t_max=8, seed=1)
+    out = run_single_trajectory(N=8, r=1.0, sample_times=[2, 4, 8],t_max=8, seed=1)
     assert out[-1] < 1.0
     print("  [PASS] r=1  -> S_R decays to 0\n")
 
@@ -85,8 +75,8 @@ def validate() -> None:
 
 def sweep(cfg: Config) -> Dict[Tuple[int, float], dict]:
     """
-    Run every (N, r) cell, averaging S_R(t) over cfg.n_traj trajectories.
-    Returns (N, r) -> {'times', 'mean', 'sem'}.
+    Run every (N, r) cell, averaging S_R(t) over 'n' trajectories.
+    Returns (N, r) -> {'times', 'mean', 'sem'}
     """
     results: Dict[Tuple[int, float], dict] = {}
     for N in cfg.N_values:
@@ -115,7 +105,9 @@ def sweep(cfg: Config) -> Dict[Tuple[int, float], dict]:
 # =====================================================================
 
 def _save(fig, outdir, stem):
-    import os
+    """
+    Saves figure.
+    """
     os.makedirs(outdir, exist_ok=True)
     fig.tight_layout()
     for ext in ("png", "pdf"):
