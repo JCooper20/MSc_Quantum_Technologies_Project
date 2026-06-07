@@ -1,14 +1,12 @@
 """
-scripts/plot_stage6_training_curve.py
---------------------------------------
 Single REINFORCE run for L=16, k=3, n_batches=150.
 Plots S(L/2) vs batch number to visualise whether entropy rises during training.
 """
 
+#Imports
 import numpy as np
 import matplotlib.pyplot as plt
 import time
-
 from src.training.reinforce import train_policy
 
 
