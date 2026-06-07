@@ -1,18 +1,10 @@
 """
-scripts/run_stage6_rl.py
-------------------------
 Stage 6: Adaptive RL Controller
  
 Trains a REINFORCE policy to adaptively select which qubits to measure
 at each circuit layer, targeting high entanglement (volume-law) at
 measurement rates that would otherwise drive area-law behaviour.
  
-Three baselines:
-  - Random measurements at rate k/L
-  - Boundary-avoiding heuristic (measures qubits furthest from cut)
-  - Sign-Colour Decoder (where tractable)
- 
-Key metric: ΔS/S_max = (S_adaptive - S_boundary) / S_max
 """
  
 import numpy as np
