@@ -1,25 +1,18 @@
 """
-scripts/run_stage4_stim.py
---------------------------
 Stage 4: Stim stabiliser backend — MIPT sweep, scaling, CNN vs MLP.
  
-Replaces the Qiskit statevector backend with Stim (O(n²) vs O(2ⁿ)),
-enabling system sizes L up to 64+.
 """
- 
+# Imports 
 import numpy as np
 import json
 import time
- 
 from src.config import StimConfig
 from src.simulators.stim_clifford import run_mipt_sweep, run_scaling
 from src.analysis.encoders import generate_data
 from src.models.phase_classifiers import train_cnn, cnn_predict_proba
 from src.analysis.encoders import encode_flat, encode_2d
- 
 from sklearn.neural_network import MLPClassifier
 from sklearn.metrics import accuracy_score
- 
  
 def run_comparison(cfg: StimConfig):
     L     = cfg.L_main
