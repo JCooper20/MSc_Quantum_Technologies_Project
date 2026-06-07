@@ -1,20 +1,16 @@
 """
-scripts/run_stage5_architectures.py
-------------------------------------
 Stage 5: CNN / TCN / GRU architecture comparison.
  
 Benchmarks three temporal architectures against the spatial CNN and MLP
-baseline as a function of L and |p_m - p_c|. Tests the hypothesis that
-temporal models respecting causal ordering outperform spatial CNNs near
-the critical point.
+baseline as a function of L and |p_m - p_c|. 
 """
- 
+
+# Imports
 import numpy as np
 import json
 import time
 from sklearn.neural_network import MLPClassifier
 from sklearn.metrics import accuracy_score
- 
 from src.config import ArchConfig
 from src.simulators.stim_clifford import run_trajectory_stim
 from src.analysis.encoders import generate_data_all, encode_flat, encode_2d, encode_temporal
