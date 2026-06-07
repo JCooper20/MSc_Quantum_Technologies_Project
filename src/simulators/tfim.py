@@ -75,7 +75,7 @@ class QiskitTFIMSimulator:
 
     # Computes fidelity of current state |ψ⟩ vs target GHZ state |ψ_GHZ⟩ 
     def compute_fidelity(self, state: Statevector) -> float:
-         """
+        """
         Compute fidelity between current state and target GHZ state.
         - F = |⟨ψ_GHZ|ψ⟩|² ∈ [0, 1]
         - F = 1.0 → state is exactly GHZ (perfect preservation)
@@ -87,7 +87,7 @@ class QiskitTFIMSimulator:
 
     # Preform  Projective measurement on single qubit
     def measure_qubit(self, state: Statevector, qubit: int) -> Tuple[Statevector, int]:
-         """
+        """
         Projective measurement of a single qubit with Born-rule collapse.
         Steps:
           1. Compute P(outcome=0) and P(outcome=1) from state amplitudes
@@ -119,7 +119,7 @@ class QiskitTFIMSimulator:
 
     # Compute local Pauli expectation values <X_i> and <Z_i> for each qubit i
     def get_local_observables(self, state: Statevector) -> Dict[str, np.ndarray]:
-         """
+        """
         Compute local Pauli expectation values <X_i> and <Z_i> for each qubit:
          - <Z_i> = P(0) - P(1) (direct from Z-basis probabilities):
          - <X_i> = <psi'|Z_i|psi'>,  |psi'> = H_i|psi>
@@ -255,10 +255,10 @@ class QiskitTFIMSimulator:
             'observables_history': observables_history,
             'final_fidelity':      fidelities[-1], }
 
-        # Prepare raw trajectoy history into fixed sized tensors for nearal network
-        def _prepare_features(self, t: int, measurement_outcomes: List,measurement_mask: np.ndarray,
-                              observables_history: List,current_outcomes: np.ndarray) -> Dict:
-         """
+    # Prepare raw trajectoy history into fixed sized tensors for nearal network
+    def _prepare_features(self, t: int, measurement_outcomes: List,measurement_mask: np.ndarray,
+                          observables_history: List,current_outcomes: np.ndarray) -> Dict:
+        """
         Encode the last T timesteps of trajectory history into fixed-size
         input tensors for the neural controller.
         Builds a sliding window [t-T+1, ..., t] of length T = history_length,
