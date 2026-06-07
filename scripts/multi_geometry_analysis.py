@@ -1,19 +1,14 @@
 """
-Re-analysis of the saved Phase A sweep data (no new simulations).
-
 Extracts the measurement-induced critical point p_c from the CROSSING of
 the tripartite-mutual-information curves I3(p_m) across system sizes N,
-following Zabalo et al. (PRB 102, 064305, 2020). Raw I3 is extensive in
-the volume-law phase (I3 ~ -N), so the size-resolved curves are nested
-and intersect only where their ordering reverses near criticality — that
-reversal point is p_c.
+following Zabalo et al. (PRB 102, 064305, 2020). 
 
 For each geometry it also performs a finite-size-scaling (FSS) collapse of
 I3 onto the scaling form
     I3(p_m, L) = G[ (p_m - p_c) * L^{1/nu} ]
 with the linear size L defined per geometry:
     1D brickwork    L = N
-    2D lattice      L = sqrt(N)        (so L^{1/nu} = N^{1/(2 nu)})
+    2D lattice      L = sqrt(N)    
     fully connected L = sqrt(N)
 """
 
@@ -85,9 +80,7 @@ def _bootstrap_crossing_std(geom, Ns, pms, window, B=400, seed=0):
     Bootstrap estimate of the crossing-location uncertainty.
 
     Used as a fallback when the deterministic pairwise method yields fewer
-    than two intersections (the fully-connected I3 curves are nested and
-    merge toward zero rather than reversing, so only the two smallest sizes
-    intersect). The 200 trajectories per (N, p_m) are resampled with
+    than two intersections. The 200 trajectories per (N, p_m) are resampled with
     replacement, the median pairwise crossing recomputed each time, and the
     standard deviation of those medians returned.
     """
@@ -136,11 +129,8 @@ def collapse_residual(p_c, nu, geom, Ns, pms, ymean, ysem, pwin):
     Cross-size leave-one-out collapse quality (Houdayer-Hartmann style).
 
     Each point (x_i, y_i) of size N_i is compared against the master curve
-    built from the OTHER system sizes only, by linear interpolation at x_i.
-    The residual is normalised by the combined statistical error. This
-    penalises the trivial nu -> infinity solution: there L^{1/nu} -> 1, all
-    sizes land at the same x but keep their (extensive) y-scatter, giving a
-    large cross-size residual.
+    built from the other system sizes only, by linear interpolation at x_i.
+   
     """
     data = {}
     for N in Ns:
@@ -159,7 +149,7 @@ def collapse_residual(p_c, nu, geom, Ns, pms, ymean, ysem, pwin):
         xo, yo = xo[oo], yo[oo]
         for xv, yv, sv in zip(xi, yi, si):
             if xv < xo[0] or xv > xo[-1]:
-                continue  # no two-sided support -> skip (no extrapolation)
+                continue  # no two-sided support => skip 
             yhat = np.interp(xv, xo, yo)
             num += (yv - yhat) ** 2 / (sv ** 2 + 1e-6)
             cnt += 1
@@ -169,7 +159,9 @@ def collapse_residual(p_c, nu, geom, Ns, pms, ymean, ysem, pwin):
 
 
 def fit_collapse(geom, Ns, pms, ymean, ysem, pwin, pc_range, nu_range):
-    """Grid-search then local refine (p_c, nu) minimising collapse residual."""
+    """
+    Grid-search then local refine (p_c, nu) minimising collapse residual.
+    """
     best = (np.inf, None, None)
     for p_c in pc_range:
         for nu in nu_range:
@@ -190,11 +182,6 @@ def fit_collapse(geom, Ns, pms, ymean, ysem, pwin, pc_range, nu_range):
 def collapse_quality(geom, Ns, pms, ymean, ysem, pwin, p_c, nu):
     """
     Normalised goodness-of-collapse statistic Q.
-
-    Q = sqrt( <(I3 - I3_master)^2 / sem^2> ) evaluated with the same
-    cross-size leave-one-out residual that drives the collapse fit.
-    Q ~ 1 means the size-resolved data fall onto a single curve to within
-    their statistical error bars; Q >> 1 means a poor collapse.
     """
     return float(np.sqrt(
         collapse_residual(p_c, nu, geom, Ns, pms, ymean, ysem, pwin)))
