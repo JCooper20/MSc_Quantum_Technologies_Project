@@ -1,6 +1,4 @@
 """
-scripts/run_stage3_brickwork.py
---------------------------------
 Stage 3: Monitored Brickwork Circuit — Qiskit Statevector
  
 Runs the Ising-type monitored brickwork circuit using the exact Qiskit
@@ -12,7 +10,6 @@ Pipeline:
   1. MIPT sweep   — S(L/2) vs p_m for a single L
   2. Scaling study — S(L/2) vs p_m for L = 6, 8, 10, 12
   3. Classifier   — CNN vs MLP on measurement records near the transition
-  4. Save results → results/brickwork_data.json
 """
  
 import numpy as np
