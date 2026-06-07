@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.ipynb_checkpoints/
+
+# Virtual environments 
+.venv/
+venv/
+env/
+
+# macOS
+.DS_Store
+
+# Editors / tooling 
+.vscode/
+
+
+# Project: runtime logs (data is captured in results JSON)
+logs/
