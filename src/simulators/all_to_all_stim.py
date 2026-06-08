@@ -56,8 +56,8 @@ def build_initial_bell_state(N: int) -> stim.TableauSimulator:
     its reference partner.
 
     Qubit layout in the tableau:
-        system (S) = {0,    ..., N-1}
-        reference (R) = {N,    ..., 2N-1}
+        system (S) = {0,..., N-1}
+        reference (R) = {N, ..., 2N-1}
 
     For each i we apply H to R_i then CNOT(R_i -> S_i), giving the Bell
     pair (|00> + |11>)/sqrt(2). Once all N pairs are made:
@@ -84,8 +84,7 @@ def make_sample_times(t_max: int, n_log: int, n_lin: int) -> List[int]:
     Build the list of time steps at which to record S_R.
 
     Combines logarithmically-spaced steps (to resolve the fast early-time
-    behaviour) with linearly-spaced steps (to cover the long plateau),
-    then de-duplicates and clips to [1, t_max].
+    behaviour) with linearly-spaced steps (to cover the long plateau).
     """
     log_t = np.geomspace(1, t_max, max(n_log, 2))
     lin_t = np.linspace(1, t_max,  max(n_lin, 2))
