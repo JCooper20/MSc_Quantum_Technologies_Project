@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 from src.simulators.fully_connected_stim import run_trajectory_fc
 
 N_VALUES = [16, 36, 64, 121]  # qubit counts (= L for FC)
-P_M_VALUES = [0.10, 0.49, 0.50]  # volume-law, ~p_c, area-law
+P_M_VALUES = [0.10, 0.49, 0.50]  # [volume-law, ~p_c, area-law]
 N_TRAJ = 50
 COLORS = {16: "C0", 36: "C1", 64: "C2", 121: "C3"}
 
