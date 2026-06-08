@@ -26,7 +26,9 @@ COLORS = {16: "C0", 36: "C1", 64: "C2", 121: "C3"}
 
 
 def linear_size(geom: str, N: int) -> float:
-    """Linear size L used in the FSS ansatz for each geometry."""
+    """
+    Linear size L used in the FSS ansatz for each geometry
+    """
     if geom == "2d":
         return float(np.sqrt(N))
     if geom == "fc":
@@ -35,7 +37,9 @@ def linear_size(geom: str, N: int) -> float:
 
 
 def load(geom: str):
-    """Return (Ns, pms, I3_mean, I3_sem, S_mean) for a geometry."""
+    """
+    Return (Ns, pms, I3_mean, I3_sem, S_mean) for a geometry
+    """
     path = DATA[geom][0]
     d = json.load(open(path))
     Ns = sorted((int(k) for k in d["I3"].keys()))
@@ -208,3 +212,66 @@ def main():
         results[geom] = dict(Ns=Ns, pms=pms, I3m=I3m, I3s=I3s,
                              pc_cross=pc_cross, pc_spread=pc_spread,
                              pc_fit=pc_fit, nu_fit=nu_fit, resid=res, Q=Q)
+
+        # crossing-zoom figure (one per geometry) 
+        fig, ax = plt.subplots(figsize=(7, 5))
+        zoom = (pms >= 0.10) & (pms <= 0.45)
+        for N in Ns:
+            ax.errorbar(pms[zoom], I3m[N][zoom], yerr=I3s[N][zoom],
+                        color=COLORS[N], marker="o", ms=4, lw=1.4,
+                        capsize=2, label=f"$N={N}$")
+        if not np.isnan(pc_cross):
+            ax.axvspan(pc_cross - pc_spread, pc_cross + pc_spread,
+                       color="grey", alpha=0.2)
+            ax.axvline(pc_cross, color="k", ls="--", lw=1.2,
+                       label=fr"$p_c={pc_cross:.3f}\pm{pc_spread:.3f}$")
+        ax.axhline(0, color="grey", lw=0.8)
+        ax.set_xlabel(r"$p_m$")
+        ax.set_ylabel(r"$I_3$")
+        ax.set_title(fr"{DATA[geom][1]} — $I_3$ crossing")
+        ax.legend()
+        fig.tight_layout()
+        out = f"{figdir}/I3_intersection_{geom}"
+        fig.savefig(out + ".png", dpi=200)
+        fig.savefig(out + ".pdf")
+        plt.close(fig)
+
+    #  combined collapse figure (3 panels) 
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.5))
+    for ax, geom in zip(axes, ("1d", "2d", "fc")):
+        r = results[geom]
+        Ns, pms, I3m, I3s = r["Ns"], r["pms"], r["I3m"], r["I3s"]
+        pc, nu, Q = r["pc_fit"], r["nu_fit"], r["Q"]
+        win = pwin[geom]
+        for N in Ns:
+            L = linear_size(geom, N)
+            sel = (pms >= win[0]) & (pms <= win[1])
+            x = (pms[sel] - pc) * L ** (1.0 / nu)
+            ax.errorbar(x, I3m[N][sel], yerr=I3s[N][sel],
+                        color=COLORS[N], marker="o", ms=4, lw=1.2,
+                        capsize=2, label=f"$N={N}$")
+        ax.set_xlabel(r"$(p_m - p_c)\,L^{1/\nu}$")
+        ax.set_ylabel(r"$I_3$")
+        ax.set_title(fr"{DATA[geom][1]}"
+                     "\n"
+                     fr"$p_c={pc:.3f},\ \nu={nu:.2f},\ Q={Q:.2f}$")
+        ax.legend(fontsize=8)
+    fig.tight_layout()
+    out = f"{figdir}/I3_collapse"
+    fig.savefig(out + ".png", dpi=200)
+    fig.savefig(out + ".pdf")
+    plt.close(fig)
+
+    # report 
+    print(f"{'geometry':<18}{'p_c (I3 crossing)':<24}{'nu (collapse)':<16}{'Q':<8}{'p_c (collapse)'}")
+    print("-" * 72)
+    for geom in ("1d", "2d", "fc"):
+        r = results[geom]
+        pc_c = f"{r['pc_cross']:.3f} ± {r['pc_spread']:.3f}"
+        print(f"{DATA[geom][1]:<18}{pc_c:<24}{r['nu_fit']:<16.2f}{r['Q']:<8.2f}{r['pc_fit']:.3f}")
+    print("-" * 72)
+   
+
+
+if __name__ == "__main__":
+    main()
