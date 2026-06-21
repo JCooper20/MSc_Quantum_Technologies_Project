@@ -44,7 +44,7 @@ class Config:
 
 def validate() -> None:
     """
-    Cheap correctness checks
+    Sanity checks
     """
     print("Validation:")
 
@@ -116,7 +116,8 @@ def _save(fig, outdir, stem):
 
 
 def make_plots(cfg: Config, results: Dict[Tuple[int, float], dict]) -> None:
-    """fig1/2: S_R/N vs t at small/large r.  fig3: late-time S_R/N vs r."""
+    """
+    fig1/2: S_R/N vs t at small/large r.  fig3: late-time S_R/N vs r."""
 
     def time_series(r_target, stem, label):
         fig, ax = plt.subplots(figsize=(8, 5))
