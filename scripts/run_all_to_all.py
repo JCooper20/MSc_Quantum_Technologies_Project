@@ -34,13 +34,17 @@ class Config:
     """
     All sweep parameters
     """
-    N_values: List[int] = field(default_factory=lambda: [8, 16, 32, 64])
+    N_values: List[int] = field(default_factory=lambda:
+        [8, 16, 32, 64, 128, 256, 512])
+    # Fine grid from r=0 through the transition (~0.45-0.50), coarse above.
     r_values: List[float] = field(default_factory=lambda:
-        [0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90])
-    n_traj: int = 100             # trajectories averaged per (N, r)
-    t_max_factor: int = 4         # t_max = t_max_factor * N time steps
+        [round(0.02 * k, 2) for k in range(26)]      # 0.00, 0.02, ..., 0.50
+        + [0.60, 0.70, 0.80, 0.90])
+    n_traj: int = 300             # trajectories averaged per (N, r)
+    t_max_factor: int = 8         # t_max = t_max_factor * N time steps
     n_log_times: int = 14         # log-spaced sample times
-    n_lin_times: int = 10         # linearly-spaced sample times
+    n_lin_times: int = 40         # linearly-spaced sample times (dense, for
+                                  # the mid-time log-derivative window)
     seed: int = 12345
     outdir: str = str(REPO_ROOT / "results" / "figures" / "all_to_all")
     ckpt_path: str = str(REPO_ROOT / "results" / "checkpoints" / "checkpoint.json")
@@ -84,6 +88,8 @@ def validate() -> None:
 def sweep(cfg: Config) -> Dict[Tuple[int, float], dict]:
     """
     Run every (N, r) cell, averaging S_R(t) over 'n' trajectories.
+    Saves the checkpoint after every cell so a long run never loses more
+    than one cell on a crash.
     Returns (N, r) -> {'times', 'mean', 'sem', 'n_traj'}
     """
     results: Dict[Tuple[int, float], dict] = {}
@@ -104,6 +110,7 @@ def sweep(cfg: Config) -> Dict[Tuple[int, float], dict]:
                                "mean": mean.tolist(),
                                "sem": sem.tolist(),
                                "n_traj": cfg.n_traj}
+            save_checkpoint(results, cfg.ckpt_path)   # crash-safe incremental save
             print(f"  N={N:>3}  r={r:.2f}  S_R(final)/N = "
                   f"{mean[-1] / N:.3f}   ({time.time() - t0:.1f}s)")
     return results
@@ -121,7 +128,6 @@ def save_checkpoint(results: Dict[Tuple[int, float], dict], path: str) -> None:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as fh:
         json.dump(nested, fh, indent=2)
-    print(f"Checkpoint saved to {path}")
 
 
 # =====================================================================
