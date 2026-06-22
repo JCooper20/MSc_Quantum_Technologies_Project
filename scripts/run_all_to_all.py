@@ -7,7 +7,10 @@ entropy S_R over trajectories, and plots the results.
 Drives the simulator in src/simulators/all_to_all.py
 """
 
+import os
 import time
+import json
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple
 import numpy as np
@@ -18,6 +21,10 @@ import matplotlib.pyplot as plt
 from src.analysis.entropy import stabiliser_entropy_region
 from src.simulators.all_to_all import (build_initial_bell_state, make_sample_times, 
                                        run_single_trajectory,)
+
+# repo root = two levels up from scripts/
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
 # =====================================================================
 # Configuration
 # =====================================================================
@@ -36,6 +43,7 @@ class Config:
     n_lin_times: int = 10         # linearly-spaced sample times
     seed: int = 12345
     outdir: str = str(REPO_ROOT / "results" / "figures" / "all_to_all")
+    ckpt_path: str = str(REPO_ROOT / "results" / "checkpoints" / "checkpoint.json")
 
 
 # =====================================================================
@@ -76,7 +84,7 @@ def validate() -> None:
 def sweep(cfg: Config) -> Dict[Tuple[int, float], dict]:
     """
     Run every (N, r) cell, averaging S_R(t) over 'n' trajectories.
-    Returns (N, r) -> {'times', 'mean', 'sem'}
+    Returns (N, r) -> {'times', 'mean', 'sem', 'n_traj'}
     """
     results: Dict[Tuple[int, float], dict] = {}
     for N in cfg.N_values:
@@ -94,10 +102,26 @@ def sweep(cfg: Config) -> Dict[Tuple[int, float], dict]:
             sem  = traj.std(0, ddof=1) / np.sqrt(cfg.n_traj)
             results[(N, r)] = {"times": sample_times,
                                "mean": mean.tolist(),
-                               "sem": sem.tolist()}
+                               "sem": sem.tolist(),
+                               "n_traj": cfg.n_traj}
             print(f"  N={N:>3}  r={r:.2f}  S_R(final)/N = "
                   f"{mean[-1] / N:.3f}   ({time.time() - t0:.1f}s)")
     return results
+
+
+# =====================================================================
+# Checkpoint I/O  (nested {str(N): {f"{r:.4f}": cell}} format)
+# =====================================================================
+
+def save_checkpoint(results: Dict[Tuple[int, float], dict], path: str) -> None:
+    """Write results to JSON, nested by N then r."""
+    nested: dict = {}
+    for (N, r), cell in results.items():
+        nested.setdefault(str(N), {})[f"{r:.4f}"] = cell
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as fh:
+        json.dump(nested, fh, indent=2)
+    print(f"Checkpoint saved to {path}")
 
 
 # =====================================================================
@@ -161,6 +185,7 @@ def main(cfg: Config | None = None) -> None:
     validate()
     print("Sweep:")
     results = sweep(cfg)
+    save_checkpoint(results, cfg.ckpt_path)
     print("\nPlotting...")
     make_plots(cfg, results)
     print(f"Figures written to {cfg.outdir}/")
