@@ -46,7 +46,8 @@ logged as warnings — they indicate a bug, not physics. I3 has no such
 guarantee and trajectories are never truncated early.
 
 SEEDS: seed(N, r, j) = (N * 1000 + round(100 r)) * 100000 + j —
-unique across the grid, fully reproducible.
+unique across the grid, fully reproducible (within a stim version;
+record pip freeze alongside the outputs).
 
 Usage (from the project root):
     PYTHONPATH=. python scripts/run_sweep_v2_i3.py \
@@ -63,12 +64,28 @@ from multiprocessing import Pool
 
 import numpy as np
 
-from src.simulators.all_to_all_stim import (make_sample_times,
-                                            _two_qubit_cliffords)
+from src.simulators.all_to_all_stim import make_sample_times
 from src.analysis.entropy import stabiliser_entropy_region
 from src.analysis.entropy_fast import tripartite_I3
 
 N_LOG, N_LIN, T_MAX_FACTOR = 14, 10, 4          # verified protocol
+
+_CLIFFORD_CACHE = None
+
+
+def _two_qubit_cliffords():
+    """All 11,520 two-qubit Cliffords, enumerated once per worker.
+
+    Self-contained (the published all_to_all_stim.py does not carry
+    this helper). stim.Tableau.iter_all(2) has a fixed deterministic
+    order, so indexing into it with a seeded RNG gives exact uniform
+    sampling and full reproducibility within a stim version.
+    """
+    global _CLIFFORD_CACHE
+    if _CLIFFORD_CACHE is None:
+        import stim
+        _CLIFFORD_CACHE = tuple(stim.Tableau.iter_all(2))
+    return _CLIFFORD_CACHE
 
 
 def cell_seed(N, r, j):
