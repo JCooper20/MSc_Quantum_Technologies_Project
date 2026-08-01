@@ -13,13 +13,15 @@ PHYSICS (unchanged, called as-is):
     TableauSimulator). The 2-qubit Clifford cache helper is
     self-contained here because the published all_to_all_stim.py does
     not export it.
-  - S_R via src/analysis/entropy_fast.reference_entropy_fast — the
-    EXISTING bit-packed exact path, previously verified bit-identical
-    to entropy.py:stabiliser_entropy_region (300 random matrices +
-    240 checks on evolving tableaux). Chosen because the old python
-    path costs ~20-30 s PER ENTROPY CALL at N=1024, which would
-    threaten the wall-time; the fast path gives the same integers in
-    ~0.3 s. No file in src/ is modified.
+  - S_R via the repo's EXISTING fast two-step interface
+    (entropy_fast.stab_xz_matrices -> entropy_of_region_from_xz on
+    region [N, 2N)), previously verified bit-identical to
+    entropy.py:stabiliser_entropy_region (300 random matrices + 240
+    checks on evolving tableaux), and RE-VERIFIED at every task start
+    by _entropy_self_check() against the published slow path. Chosen
+    because the old python path costs ~20-30 s PER ENTROPY CALL at
+    N=1024, which would threaten the wall-time; the fast path gives
+    the same integers in ~0.3 s. No file in src/ is modified.
 
 SEEDING (kept EXACTLY as the old script for consistency with existing
 data): seed(N, r, j) = (N*1000 + round(100 r)) * 100000 + j.
@@ -60,7 +62,6 @@ Usage (normally invoked by the jobscript):
 """
 
 # Imports
-import json
 import os
 import sys
 import time
@@ -69,7 +70,58 @@ from multiprocessing import Pool
 import numpy as np
 
 from src.simulators.all_to_all_stim import make_sample_times
-from src.analysis.entropy_fast import reference_entropy_fast
+from src.analysis.entropy import stabiliser_entropy_region
+from src.analysis.entropy_fast import (stab_xz_matrices,
+                                       entropy_of_region_from_xz)
+
+
+def _reference_entropy(sim, N):
+    """S_R for region [N, 2N) via the repo's fast two-step interface
+    (stab_xz_matrices -> entropy_of_region_from_xz) — the same calling
+    pattern the working v2 script uses entropy_fast with, and exactly
+    equivalent to the published stabiliser_entropy_region on this
+    region (asserted at every task start by _entropy_self_check)."""
+    L = 2 * N
+    stabs = sim.canonical_stabilizers()
+    xs, zs = stab_xz_matrices(stabs, L)
+    return entropy_of_region_from_xz(xs, zs, L, np.arange(N, 2 * N))
+
+
+def _entropy_self_check():
+    """Assert the fast two-step path equals the published slow path on
+    a small evolving state. Runs once per task (<1 s); makes any
+    interface/version mismatch an immediate loud failure instead of a
+    silent wrong number."""
+    import stim
+    n = 32
+    cl = _two_qubit_cliffords()
+    rng = np.random.default_rng(12345)
+    sim = stim.TableauSimulator(seed=12345)
+    sim.set_num_qubits(2 * n)
+    for i in range(n):
+        sim.h(n + i)
+        sim.cnot(n + i, i)
+    ref = list(range(n, 2 * n))
+    for step in range(60):
+        if rng.random() < 0.4:
+            sim.measure(int(rng.integers(0, n)))
+        else:
+            a = int(rng.integers(0, n))
+            b = (a + 1 + int(rng.integers(0, n - 1))) % n
+            sim.do_tableau(cl[int(rng.integers(len(cl)))], [a, b])
+        if step % 10 == 0:
+            L = 2 * n
+            stabs = sim.canonical_stabilizers()
+            xs, zs = stab_xz_matrices(stabs, L)
+            e_fast = entropy_of_region_from_xz(xs, zs, L,
+                                               np.arange(n, 2 * n))
+            e_slow = stabiliser_entropy_region(sim, L, ref)
+            assert e_fast == e_slow, (
+                f"entropy self-check FAILED at step {step}: "
+                f"fast {e_fast} != published {e_slow}")
+    print("[self-check] fast entropy path == published path "
+          "(6 checkpoints on an evolving N=32 state)", flush=True)
+
 
 DEPTH_FACTOR = {64: 48, 96: 40, 128: 32, 192: 28, 256: 20,
                 384: 16, 512: 14, 768: 12, 1024: 12}
@@ -125,7 +177,7 @@ def run_one(args):
                 c = int(rng.integers(0, len(cliffords)))
                 sim.do_tableau(cliffords[c], [a, b])
         if step in sample_set:
-            sr[idx_of[step]] = reference_entropy_fast(sim, N)
+            sr[idx_of[step]] = _reference_entropy(sim, N)
     n_warn = int(np.sum(np.diff(sr) > 1e-9))
     return sr, meas_count, seed, n_warn
 
@@ -170,6 +222,7 @@ def main():
         print(f"[skip] task {tid} {key}: output exists", flush=True)
         return
 
+    _entropy_self_check()
     nslots = int(os.environ.get("NSLOTS", "2"))
     print(f"[start] task {tid}: {key}, depth {depth}N (t_max={t_max}),"
           f" {n_traj} trajectories on {nslots} cores", flush=True)
