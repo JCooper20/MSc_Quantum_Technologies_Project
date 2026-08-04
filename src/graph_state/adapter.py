@@ -1,63 +1,13 @@
 """
 Graph-state trajectory adapter for the all-to-all monitored Clifford
-model (Layer 1: engine + verification only, no ML).
-
-Drives the vendored Anders-Briegel engine (src/graphstate/engine,
-from github.com/libtangle/graph-state, MIT) through the exact same
-trajectories as the verified stim pathway:
-
-  - Bell-pair initial state: engine vertices start in |0> (graph-state
-    |+> with VOP = H, the engine default); h(N+i) then cx(N+i, i)
-    builds the same N Bell pairs as the stim runner.
-  - circuit structure driven by the SAME numpy draw sequence as
-    run_single_trajectory_logged (coin, qubit choices, clifford
-    index), so a given seed produces the identical gate/measurement
-    sequence in both engines — the "fixed circuit" comparison of the
-    verification brief, achieved by construction.
-  - arbitrary 2-qubit Cliffords: the engine natively supports local
-    Cliffords + CZ/CX only, so each of the 11,520 two-qubit Cliffords
-    is decomposed ONCE (lazily, cached) into {H, S, S_DAG, X, Y, Z,
-    CX, CZ} using stim.Tableau.to_circuit(method="elimination") as
-    the decomposition oracle, then replayed onto the engine. Any gate
-    name outside the mapped set raises loudly. Global phases are
-    irrelevant (stabilizer states).
-  - Z measurements: engine.measure(q, 'Z'). The engine draws the
-    random-outcome branch from python's global `random`; trajectories
-    seed it (random.seed(seed)) for determinism. Measurement OUTCOMES
-    do not affect S_R (outcome-independence of stabilizer entropies,
-    proven in the variance-decomposition study), so outcome streams
-    need not match stim's.
-  - S_R from the graph: for a graph state, the entanglement entropy
-    of a subset A is the GF(2) cut-rank rank(Adj[A, complement]);
-    VOPs are local and cannot change it. Computed with the existing
-    verified gf2_rank_bitpacked.
-  - snapshots: (edge list, VOP per node, node types) recorded at the
-    sample times — the trajectory as an evolving graph, stored
-    target-agnostically.
-
-STORAGE (npz; graphs at these sizes are small — edge counts are
-O(N^2) worst case but empirically far sparser, so npz with a
-flattened edge array + offsets beats HDF5's extra dependency):
-    sr            (n_samples,)      raw bits
-    times         (n_samples,)
-    vops          (n_samples, 2N)   uint8 VOP codes
-    edges_flat    (total_edges, 2)  int32, concatenated per sample
-    edge_offsets  (n_samples + 1,)  slice k = edges_flat[o[k]:o[k+1]]
-    node_type     (2N,)             0 = system, 1 = reference
-    seed, meas_count, N             scalars
-
-Verification of everything above is scripts/verify_graphstate.py —
-including FULL state equality against stim (canonical stabilizers,
-signs included) at every sample time, which validates the vendored
-engine (which ships no tests) and this adapter jointly.
+model. Drives the Anders-Briegel engine through the exact trajectories 
+of the verified stim pathway.
 """
 
 # Imports
 import random as _pyrandom
-
 import numpy as np
 import stim
-
 from src.graphstate.engine import GraphState
 from src.graphstate.vop_map import VOP_TABLEAUS
 from src.analysis.entropy_fast import gf2_rank_bitpacked
@@ -120,7 +70,7 @@ class GraphStateTrajectory:
             self.g.h(N + i)
             self.g.cx(N + i, i)
 
-    # ---- dynamics ----------------------------------------------------
+    # dynamics
     def apply_clifford(self, index, a, b):
         qmap = (a, b)
         for meth, targets in clifford_gate_list(index):
@@ -129,7 +79,7 @@ class GraphStateTrajectory:
     def measure_z(self, q):
         return self.g.measure(q, basis="Z")
 
-    # ---- readout -----------------------------------------------------
+    # readout 
     def adjacency(self):
         n = 2 * self.N
         A = np.zeros((n, n), dtype=bool)
