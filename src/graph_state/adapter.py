@@ -80,8 +80,8 @@ def two_qubit_cliffords():
 
 
 def clifford_gate_list(index):
-    """Decompose 2q Clifford #index into engine-supported gates.
-
+    """
+    Decompose 2q Clifford #index into engine-supported gates.
     Returns a list of (method_name, qubit_indices) with qubit indices
     in {0, 1}; raises on any gate outside the mapped set.
     """
@@ -93,9 +93,7 @@ def clifford_gate_list(index):
             name = inst.name
             if name not in _GATE_MAP:
                 raise ValueError(
-                    f"decomposition produced unsupported gate {name!r}"
-                    " — extend _GATE_MAP only after verifying the "
-                    "engine implements it")
+                    f"decomposition produced unsupported gate {name!r}")
             targets = [t.value for t in inst.targets_copy()]
             meth = _GATE_MAP[name]
             if meth in ("cx", "cz"):
@@ -109,7 +107,9 @@ def clifford_gate_list(index):
 
 
 class GraphStateTrajectory:
-    """One trajectory of the model in the graph-state representation."""
+    """
+    One trajectory of the model in the graph-state representation.
+    """
 
     def __init__(self, N, seed=None):
         self.N = N
@@ -153,8 +153,10 @@ class GraphStateTrajectory:
         return np.array(edges, dtype=np.int32).reshape(-1, 2), vops
 
     def to_stim(self):
-        """Reconstruct the represented stabilizer state in stim (for
-        verification): |G> from H + CZ per edge, then the VOPs."""
+        """
+        Reconstruct the represented stabilizer state in stim (for
+        verification): |G> from H + CZ per edge, then the VOPs.
+        """
         sim = stim.TableauSimulator()
         sim.set_num_qubits(2 * self.N)
         for q in range(2 * self.N):
@@ -170,9 +172,11 @@ class GraphStateTrajectory:
 
 
 def run_trajectory(N, r, sample_times, t_max, seed):
-    """Seed-deterministic trajectory; identical circuit structure to
+    """
+    Seed-deterministic trajectory; identical circuit structure to
     the stim pathway for the same seed. Returns a dict with sr,
-    snapshots (list of (edges, vops)), meas_count."""
+    snapshots (list of (edges, vops)), meas_count.
+    """
     rng = np.random.default_rng(seed)
     n_cliff = len(two_qubit_cliffords())
     traj = GraphStateTrajectory(N, seed=seed)
@@ -204,7 +208,9 @@ def run_trajectory(N, r, sample_times, t_max, seed):
 
 
 def save_trajectory(path, result):
-    """Store the evolving-graph trajectory target-agnostically."""
+    """
+    Store the evolving-graph trajectory target-agnostically.
+    """
     N = result["N"]
     snaps = result["snapshots"]
     offsets = np.zeros(len(snaps) + 1, dtype=np.int64)
