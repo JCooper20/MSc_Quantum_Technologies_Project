@@ -1,9 +1,21 @@
+"""
+Graph-state stabiliser engine (Anders-Briegel representation).
+
+Represents a stabiliser state as a graph (nodes = qubits, edges = entanglement)
+with a vertex operator (local Clifford) on each node. Implements the gate,
+measurement, and local-complementation update rules that evolve this
+representation.
+
+Adapted from libtangle/graph-state (MIT)
+"""
+
+# Imports
 import itertools as it
 import random
-
 from .qubit_vertex import QubitVertex
 from .lookup_tables import measure_table, decomposition_table, conjugation_table, cz_table
 
+# Define GraphState Class
 class GraphState(object):
   def __init__(self, num_nodes):
     self.vertices = []
@@ -11,55 +23,40 @@ class GraphState(object):
     for i in range(num_nodes):
       self.vertices.append(QubitVertex())
   
-  ########################################################
+  # ---------------------------------------------------
   # Simulation Methods
-  ########################################################
+  # ---------------------------------------------------
 
   def apply(self, vop, target):
+  # Compose a local Clifford (VOP code) onto a vertex.
     self.vertices[target].apply(vop)
-
+  
+  # Single-qubit Cliffords, by their VOP-table codes.
   def h(self, target):
     self.apply(10, target)
-
   def x(self, target):
     self.apply(1, target)
-  
   def y(self, target):
     self.apply(2, target)
-  
   def z(self, target):
     self.apply(3, target)
-
   def id(self, target):
     pass
-
   def s(self, target):
     self.apply(6, target)
-
   def s_dagger(self, target):
     self.apply(5, target)
 
   def cz(self, control, target):
-    # VENDORED-ENGINE BUGFIX (documented in VERIFICATION.md): the
-    # original conditions were inverted ("if is_isolated: reduce").
-    # Anders-Briegel (PRA 73, 022334, Sec. III) reduce a vertex's VOP
-    # via local complementations BEFORE the cz table lookup exactly
-    # when the vertex HAS a non-operand neighbour (a swapping partner
-    # exists); when it is isolated (up to the operand) reduction is
-    # impossible and the lookup table handles the remaining VOP.
-    # The inverted condition skipped reduction whenever it was needed
-    # and attempted it when impossible, corrupting states — caught by
-    # the op-by-op state-equality hunt against stim on the very first
-    # two-qubit gate.
+    # Reduce both VOPs to a table-compatible form before the lookup.
     if not self.vertices[control].is_isolated(target):
       self.reduce_vop(control, target)
-
     if not self.vertices[target].is_isolated(control):
       self.reduce_vop(target, control)
-
     if not self.vertices[control].is_isolated(target):
       self.reduce_vop(control, target)
 
+    # Look up the post-CZ edge state and VOPs, then apply them.
     has_edge = self.has_edge(control, target)
     control_vop = self.vertices[control].vop_code
     target_vop = self.vertices[target].vop_code
@@ -67,10 +64,12 @@ class GraphState(object):
     edge, control_vop, target_vop = cz_table[int(has_edge), control_vop, target_vop]
     self.vertices[control].set_vop(control_vop)
     self.vertices[target].set_vop(target_vop)
-    if has_edge != edge:
+    if has_edge != edge:  # toggle only if the edge state changed
       self.toggle_edge(control, target)
 
   def measure(self, target, basis='Z'):
+    # Map basis to code, then conjugate by the vertex's VOP to get the
+    # measurement actually performed on the underlying graph state.
     if basis == 'X':
       basis = 1
     elif basis == 'Y':
@@ -83,7 +82,6 @@ class GraphState(object):
 
     # Choose a result
     choice = random.choice([0, 1])
-
     if bare_basis == 1:
       choice = self.bare_measure_x(target, choice)
     elif bare_basis == 2:
@@ -94,7 +92,7 @@ class GraphState(object):
     # Flip the result if there is a negative phase
     if phase == -1:
       choice = not choice
-    
+      
     return int(choice)
 
   def cx(self, control, target):
@@ -102,53 +100,38 @@ class GraphState(object):
     self.cz(control, target)
     self.h(target)
 
-  ########################################################
-  # Computation Algorithms see https://arxiv.org/abs/quant-ph/0504117.pdf)
-  ########################################################
+  # ------------------------------------------------------
+  # Computation Algorithms 
+  # ------------------------------------------------------
 
   def reduce_vop(self, a, b):
-    # First, we choose a swapping partner c
+    # Reduce a's VOP to identity 
     external = self.vertices[a].non_isolated(b)
     c = external.pop() if external else b
 
     d = decomposition_table[self.vertices[a].vop_code]
     for factor in reversed(d):
       if factor == 'X':
-        # Factor is sqrt(-iX): realised by LC at a itself
+        # Factor is sqrt(-iX)
         self.local_complementation(a)
       else:
-        # Factor is sqrt(iZ): realised by LC at a NEIGHBOUR of a —
-        # the swapping partner c chosen above. VENDORED-ENGINE
-        # BUGFIX (documented in VERIFICATION.md): the original code
-        # computed c but then complemented at the cz operand b,
-        # which is generally not a neighbour of a and does not
-        # implement sqrt(iZ) on a. Masked in the original by the
-        # inverted cz conditions that made c == b always.
         self.local_complementation(c)
     
-    # Now the vertex operator of a is `0`, 
-    # the identity operator.
+    # Now the vertex operator of a is `0` (identity)
 
   def local_complementation(self, a):
+    # Toggle all edges among a's neighbours; apply the local Clifford
+    # corrections (sqrt(-iX) on a, sqrt(iZ) on each neighbour).
     ngbh = self.vertices[a].neighbors.copy()
-
     for i, j in it.combinations(ngbh, 2):
       self.toggle_edge(i, j)
-
     self.vertices[a].apply_opposite(14)
     for i in self.vertices[a].neighbors:
       self.vertices[i].apply_opposite(6)
   
   def bare_measure_x(self, target, choice, _y_flip=1):
-    # VENDORED-ENGINE BUGFIX (documented in VERIFICATION.md): the
-    # original edge-update sets were wrong whenever the measured
-    # vertex had more than one neighbour (all such cases failed the
-    # 24-VOP forced-outcome unit test; single-neighbour cases passed).
-    # Instead of repairing the set expressions by hand, X-measurement
-    # is reduced to already-verified primitives: local complementation
-    # at a special neighbour b conjugates X_target into +/-Y_target,
-    # so  P_X^a = LC(b)  ->  P_Y^a  ->  LC(b),
-    # with the outcome relabel fixed by the same exhaustive unit test.
+    # original X-measurement was wrong for multi-neighbour qubits.
+    # Fixed by turning it into a Y-measurement via local complementation.
     if len(self.vertices[target].neighbors) == 0:
       return 0
     b = next(iter(self.vertices[target].neighbors))
@@ -158,38 +141,29 @@ class GraphState(object):
     return choice
 
   def bare_measure_y(self, target, choice):
-    # VENDORED-ENGINE BUGFIX (documented in VERIFICATION.md): the
-    # original applied the sqrt(+/-iZ) correction to TARGET once per
-    # neighbour (loop body used self.vertices[target]); Anders-Briegel
-    # (following Hein et al.) require the correction on EACH NEIGHBOUR
-    # and once on the measured vertex. Caught by the 24-VOP x 4-shape
-    # measurement unit test (all 24 connected Y-branch cases failed).
+    # // (y)
     for n in self.vertices[target].neighbors:
       self.vertices[n].apply_opposite(5 if choice else 6)
-
     for i, j in it.combinations(self.vertices[target].neighbors | {target} , 2):
       self.toggle_edge(i, j)
-
     self.vertices[target].apply_opposite(5 if choice else 6)
     return choice
 
   def bare_measure_z(self, target, choice):
+    #  // (z)
     for n in self.vertices[target].neighbors.copy():
       self.remove_edge(target, n)
       if choice:
         self.vertices[n].apply_opposite(3)
-
     if choice:
       self.vertices[target].apply_opposite(1)
-
     self.vertices[target].apply_opposite(10) 
 
     return choice
   
-  ########################################################
+  # ------------------------------------------------------
   # Graph Methods
-  ########################################################
-
+  # ------------------------------------------------------
   def toggle_edge(self, a, b):
     if self.has_edge(a, b):
       self.remove_edge(a, b)
