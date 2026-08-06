@@ -1,35 +1,20 @@
 """
-Layer-1 verification gate for the graph-state engine + adapter
-(src/graphstate/). Produces the evidence reported in VERIFICATION.md.
+Verification for the graph-state engine (src/graphstate/):
 
-  A. S_R(t) match vs the stim pathway across >= 20 independent
-     trajectories: N in {8, 16, 32} x r in {0.2, 0.35, 0.5} x seeds,
-     identical circuits by construction (same numpy draw stream),
-     every sample time compared against the published
-     stabiliser_entropy_region.
-  B. Full state equality at small N (canonical stabilizers, signs
-     included) at every sample time, with measurement outcomes
-     synchronised via postselect (outcomes are random and independent
-     between engines; S_R is outcome-independent, but state equality
-     is not).
-  C. Physical sanity: S_R starts at N, monotone non-increasing,
-     non-negative, reaches 0 deep in the purifying phase.
-  D. LC non-uniqueness demonstration: apply a local complementation
-     to a recorded graph; show the edge set changes while both S_R
-     (cut-rank) and the reconstructed stabilizer state are unchanged.
-  E. Timing at N = 8, 16, 32, 64 and stored npz size.
+  A. S_R(t) matches stim across >=20 trajectories (N in {8,16,32},
+     r in {0.2,0.35,0.5}), identical circuits via shared draw stream.
+  B. Full state equality at small N.
+  C. Physical sanity (S_R: starts at N, monotone down, hits 0).
+  D. LC non-uniqueness (edges change; S_R and state do not).
+  E. Timing and npz size (N = 8/16/32/64).
 
-Run from the project root:
-    PYTHONPATH=. python scripts/verify_graphstate.py
 """
 
 # Imports
 import os
 import time
-
 import numpy as np
 import stim
-
 from src.simulators.all_to_all_stim import make_sample_times
 from src.analysis.entropy import stabiliser_entropy_region
 from src.analysis.entropy_fast import gf2_rank_bitpacked
@@ -39,7 +24,9 @@ from src.graphstate.adapter import (GraphStateTrajectory,
 
 
 def stim_reference_sr(N, r, sample_times, t_max, seed):
-    """The verified stim pathway, identical draw stream."""
+    """
+    The verified stim pathway, identical draw stream.
+    """
     rng = np.random.default_rng(seed)
     cl = two_qubit_cliffords()
     sim = stim.TableauSimulator(seed=seed)
